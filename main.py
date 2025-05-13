@@ -45,11 +45,14 @@ class ServerManager(QtWidgets.QWidget):
         btn_layout.addWidget(self.start_button)
         btn_layout.addWidget(self.stop_button)
         left_panel.addLayout(btn_layout)
-
         # Список игроков
         left_panel.addWidget(QtWidgets.QLabel("Игроки:"))
         self.players_list = QtWidgets.QListWidget()
         left_panel.addWidget(self.players_list)
+
+        # Контекстное меню для игроков
+        self.players_list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.players_list.customContextMenuRequested.connect(self.show_player_menu)
 
         # Правая панель (Консоль и ввод команд)
         right_panel = QtWidgets.QVBoxLayout()
@@ -91,6 +94,48 @@ class ServerManager(QtWidgets.QWidget):
 
         self.selected_server = None
         self.load_servers()
+    
+    def show_player_menu(self, pos):
+        item = self.players_list.itemAt(pos)
+        if not item:
+            return
+        player_name = item.text()
+        menu = QtWidgets.QMenu(self)
+        kick_action = menu.addAction("Кикнуть")
+        ban_action = menu.addAction("Забанить")
+
+        # Проверяем, является ли игрок администратором (есть ли в ops.txt)
+        server_name = self.get_selected_server()
+        is_op = False
+        if server_name:
+            ops_path = os.path.join(SERVERS_DIR, server_name, "ops.json")
+            if os.path.exists(ops_path):
+                try:
+                    with open(ops_path, encoding="utf-8") as f:
+                        ops_content = f.read()
+                        # Проверяем по имени (точное совпадение)
+                        is_op = re.search(rf'"name"\s*:\s*"{re.escape(player_name)}"', ops_content) is not None
+                except Exception:
+                    pass
+
+        if is_op:
+            op_action = menu.addAction("Забрать права администратора")
+        else:
+            op_action = menu.addAction("Выдать права администратора")
+
+        action = menu.exec(self.players_list.mapToGlobal(pos))
+        if action == kick_action:
+            self.command_input.setText(f"kick {player_name}")
+            self.send_command()
+        elif action == ban_action:
+            self.command_input.setText(f"ban {player_name}")
+            self.send_command()
+        elif action == op_action:
+            if is_op:
+                self.command_input.setText(f"deop {player_name}")
+            else:
+                self.command_input.setText(f"op {player_name}")
+            self.send_command()
 
     def load_servers(self):
         # Очищаем старые элементы
@@ -127,6 +172,12 @@ class ServerManager(QtWidgets.QWidget):
             label.setStyleSheet("padding-left: 4px;")
             label.mousePressEvent = lambda event, name=server_name: self.select_server_by_name(name)
 
+            # Контекстное меню по ПКМ на строке сервера
+            row_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            row_widget.customContextMenuRequested.connect(
+                lambda pos, name=server_name, widget=row_widget: self.show_server_menu(pos, name, widget)
+            )
+
             row_layout.addWidget(info_btn)
             row_layout.addWidget(folder_btn)
             row_layout.addWidget(label)
@@ -134,7 +185,43 @@ class ServerManager(QtWidgets.QWidget):
             self.server_list_layout.addWidget(row_widget)
             self.server_list_items.append((server_name, row_widget, label))
 
-        self.players_list.clear()
+        self.players_list.clear()    
+    def show_server_menu(self, pos, server_name, widget):
+        menu = QtWidgets.QMenu(self)
+        info_action = menu.addAction("Информация о сервере")
+        folder_action = menu.addAction("Открыть папку сервера")
+        archive_action = menu.addAction("Заархивировать сервер")
+
+        action = menu.exec(widget.mapToGlobal(pos))
+        if action == info_action:
+            self.show_server_info(server_name)
+        elif action == folder_action:
+            self.open_server_folder(server_name)
+        elif action == archive_action:
+            self.archive_server(server_name)
+
+    def archive_server(self, server_name):
+        if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Нельзя архивировать запущенный сервер. Сначала остановите его.")
+            return
+
+        archive_dir = os.path.join(SERVERS_DIR, "Архив")
+        if not os.path.exists(archive_dir):
+            os.makedirs(archive_dir)
+
+        server_path = os.path.join(SERVERS_DIR, server_name)
+        archive_path = os.path.join(archive_dir, server_name)
+
+        if os.path.exists(archive_path):
+            QtWidgets.QMessageBox.warning(self, "Ошибка", f"Сервер {server_name} уже существует в архиве.")
+            return
+
+        try:
+            os.rename(server_path, archive_path)
+            QtWidgets.QMessageBox.information(self, "Успех", f"Сервер {server_name} успешно перемещен в архив.")
+            self.load_servers()  # Обновляем список серверов
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось заархивировать сервер {server_name}:\n{str(e)}")
 
     def select_server_by_name(self, name):
         self.selected_server = name
@@ -152,10 +239,45 @@ class ServerManager(QtWidgets.QWidget):
     def on_server_selected(self):
         self.players_list.clear()
         # Здесь можно добавить загрузку игроков для выбранного сервера, если нужно
-
+        
     def show_server_info(self, server_name):
-        # Просто показывает название сборки (название сервера)
-        QtWidgets.QMessageBox.information(self, "Информация о сервере", f"Название сборки: {server_name}")
+        server_path = os.path.join(SERVERS_DIR, server_name)
+        loader_info = "Не удалось определить загрузчик"
+
+        # Forge
+        forge_lib_path = os.path.join(server_path, "libraries", "net", "minecraftforge", "forge")
+        if os.path.isdir(forge_lib_path):
+            versions = os.listdir(forge_lib_path)
+            if versions:
+                # Берём первую найденную версию (обычно одна)
+                forge_version = versions[0]
+                loader_info = f"Forge {forge_version}"
+
+        # Fabric
+        fabric_lib_path = os.path.join(server_path, "libraries", "net", "fabricmc", "fabric-loader")
+        if os.path.isdir(fabric_lib_path):
+            versions = os.listdir(fabric_lib_path)
+            if versions:
+                # Берём первую найденную версию (обычно одна)
+                fabric_version = versions[0]
+                # Ищем jar-файл
+                jar_files = [f for f in os.listdir(os.path.join(fabric_lib_path, fabric_version)) if f.endswith(".jar")]
+                if jar_files:
+                    # Имя файла вида fabric-loader-0.16.9.jar
+                    jar_name = jar_files[0]
+                    # Извлекаем версию
+                    match = re.search(r'fabric-loader-([\d\.]+)\.jar', jar_name)
+                    if match:
+                        fabric_version_str = match.group(1)
+                        loader_info = f"Fabric {fabric_version_str}"
+                    else:
+                        loader_info = f"Fabric {fabric_version}"
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Информация о сервере",
+            f"Название сборки: {server_name}\nЗагрузчик: {loader_info}"
+        )
 
     def open_server_folder(self, server_name):
         server_path = os.path.join(SERVERS_DIR, server_name)
