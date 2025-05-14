@@ -2,6 +2,12 @@ import os
 from PyQt6 import QtWidgets, QtCore, QtGui
 import sys
 import re
+import zipfile
+import shutil
+import json
+import subprocess
+import requests
+
 from config import SERVERS_DIR # Укажи путь к папке с серверами
 
 def list_servers():
@@ -27,13 +33,18 @@ class ServerManager(QtWidgets.QWidget):
         # Левая панель (Список серверов, кнопки, список игроков)
         left_panel = QtWidgets.QVBoxLayout()
 
-        # Список серверов с кнопками "инфо" и "папка"
+        # Список серверов
         left_panel.addWidget(QtWidgets.QLabel("Серверы:"))
         self.server_list_widget = QtWidgets.QWidget()
         self.server_list_layout = QtWidgets.QVBoxLayout(self.server_list_widget)
         self.server_list_layout.setContentsMargins(0, 0, 0, 0)
         self.server_list_layout.setSpacing(2)
         self.server_list_items = []
+
+        # Кнопка "Создать сервер"
+        self.create_server_button = QtWidgets.QPushButton("Создать сервер")
+        self.create_server_button.clicked.connect(self.show_create_server_dialog)
+        left_panel.addWidget(self.create_server_button)
 
         left_panel.addWidget(self.server_list_widget)
 
@@ -93,8 +104,144 @@ class ServerManager(QtWidgets.QWidget):
         self.process = None
 
         self.selected_server = None
+
+        # Для статусов серверов
+        self.server_status = {}  # server_name: "running"/"error"/"stopped"
+
         self.load_servers()
-    
+
+    def get_server_status(self, server_name):
+        # Если сервер сейчас выбран и процесс запущен
+        if hasattr(self, 'selected_server') and self.selected_server == server_name and self.process:
+            if self.process.state() == QtCore.QProcess.ProcessState.Running:
+                return "running"
+            elif self.process.exitStatus() == QtCore.QProcess.ExitStatus.CrashExit:
+                return "error"
+            else:
+                return "stopped"
+        # Если есть сохранённый статус
+        return self.server_status.get(server_name, "stopped")
+
+    def set_server_status(self, server_name, status):
+        self.server_status[server_name] = status
+        self.load_servers()
+
+    def make_status_icon(self, status):
+        # Возвращает QPixmap с кружком нужного цвета
+        color = {
+            "running": "#4caf50",   # Зеленый
+            "error": "#f44336",     # Красный
+            "stopped": "#bdbdbd"    # Серый
+        }.get(status, "#bdbdbd")
+        pixmap = QtGui.QPixmap(16, 16)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(color)))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, 12, 12)
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+    def load_servers(self):
+        # Очищаем старые элементы
+        for i in reversed(range(self.server_list_layout.count())):
+            item = self.server_list_layout.takeAt(i)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.server_list_items.clear()
+        servers = list_servers()
+        for server_name in servers:
+            row_widget = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(2, 0, 2, 0)
+            row_layout.setSpacing(4)
+
+            # Индикатор статуса
+            status = self.get_server_status(server_name)
+            icon_label = QtWidgets.QLabel()
+            icon_label.setPixmap(self.make_status_icon(status).pixmap(16, 16))
+            row_layout.addWidget(icon_label)
+
+            # Текст сервера
+            label = QtWidgets.QLabel(server_name)
+            label.setMinimumHeight(20)
+            label.setStyleSheet("padding-left: 4px;")
+            label.mousePressEvent = lambda event, name=server_name: self.select_server_by_name(name)
+
+            # Контекстное меню по ПКМ на строке сервера
+            row_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            row_widget.customContextMenuRequested.connect(
+                lambda pos, name=server_name, widget=row_widget: self.show_server_menu(pos, name, widget)
+            )
+
+            row_layout.addWidget(label)
+            row_layout.addStretch(1)
+            self.server_list_layout.addWidget(row_widget)
+            self.server_list_items.append((server_name, row_widget, label, icon_label))
+
+        self.players_list.clear()
+
+    def start_server(self):
+        server_name = self.get_selected_server()
+        if not server_name:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Выберите сервер для запуска.")
+            return
+        server_path = os.path.join(SERVERS_DIR, server_name)
+        bat_file = os.path.join(server_path, 'start.bat')
+        if not os.path.exists(bat_file):
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Файл start.bat не найден для сервера {server_name}")
+            return
+
+        if self.process:
+            self.process.kill()
+            self.process = None
+
+        self.log_output.clear()
+        self.process = QtCore.QProcess(self)
+        self.process.setWorkingDirectory(server_path)
+        self.process.readyReadStandardOutput.connect(self.handle_stdout)
+        self.process.readyReadStandardError.connect(self.handle_stderr)
+        self.process.finished.connect(self.process_finished)
+        self.process.start('cmd.exe', ['/c', bat_file])
+
+        self.stop_button.setEnabled(True)
+        self.send_command_button.setEnabled(True)
+
+        # Установить статус "running"
+        self.set_server_status(server_name)
+
+    def stop_server(self):
+        if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
+            try:
+                self.process.write(b"stop\n")
+                self.process.waitForBytesWritten(1000)
+            except Exception:
+                pass
+            self.process.kill()
+            self.process = None
+            self.stop_button.setEnabled(False)
+            self.send_command_button.setEnabled(False)
+            # Установить статус "stopped"
+            if self.selected_server:
+                self.set_server_status(self.selected_server, "stopped")
+
+    def process_finished(self):
+        self.log_output.append("\nСервер завершил работу.")
+        self.stop_button.setEnabled(False)
+        self.send_command_button.setEnabled(False)
+        # Проверяем exitCode
+
+        if self.process and self.process.exitStatus() == QtCore.QProcess.ExitStatus.CrashExit:
+            self.set_server_status(self.selected_server, "error")
+            self.log_output.append("\nСервер завершил работу с ошибкой (краш).")
+            QtWidgets.QMessageBox.critical(self, "Краш сервера", "Сервер завершился с ошибкой (краш). Проверьте логи!")
+        else:
+            self.set_server_status(self.selected_server, "stopped")
+
+
+
     def show_player_menu(self, pos):
         item = self.players_list.itemAt(pos)
         if not item:
@@ -137,54 +284,6 @@ class ServerManager(QtWidgets.QWidget):
                 self.command_input.setText(f"op {player_name}")
             self.send_command()
 
-    def load_servers(self):
-        # Очищаем старые элементы
-        for i in reversed(range(self.server_list_layout.count())):
-            item = self.server_list_layout.takeAt(i)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-        self.server_list_items.clear()
-        servers = list_servers()
-        for server_name in servers:
-            row_widget = QtWidgets.QWidget()
-            row_layout = QtWidgets.QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(2, 0, 2, 0)
-            row_layout.setSpacing(4)
-
-            # Кнопка инфо
-            info_btn = QtWidgets.QToolButton()
-            info_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation))
-            info_btn.setFixedSize(20, 20)
-            info_btn.setToolTip("Информация о сервере")
-            info_btn.clicked.connect(lambda _, name=server_name: self.show_server_info(name))
-
-            # Кнопка папка
-            folder_btn = QtWidgets.QToolButton()
-            folder_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
-            folder_btn.setFixedSize(20, 20)
-            folder_btn.setToolTip("Открыть папку сервера")
-            folder_btn.clicked.connect(lambda _, name=server_name: self.open_server_folder(name))
-
-            # Текст сервера
-            label = QtWidgets.QLabel(server_name)
-            label.setMinimumHeight(20)
-            label.setStyleSheet("padding-left: 4px;")
-            label.mousePressEvent = lambda event, name=server_name: self.select_server_by_name(name)
-
-            # Контекстное меню по ПКМ на строке сервера
-            row_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-            row_widget.customContextMenuRequested.connect(
-                lambda pos, name=server_name, widget=row_widget: self.show_server_menu(pos, name, widget)
-            )
-
-            row_layout.addWidget(info_btn)
-            row_layout.addWidget(folder_btn)
-            row_layout.addWidget(label)
-            row_layout.addStretch(1)
-            self.server_list_layout.addWidget(row_widget)
-            self.server_list_items.append((server_name, row_widget, label))
-
         self.players_list.clear()    
     def show_server_menu(self, pos, server_name, widget):
         menu = QtWidgets.QMenu(self)
@@ -226,7 +325,7 @@ class ServerManager(QtWidgets.QWidget):
     def select_server_by_name(self, name):
         self.selected_server = name
         # Подсветка выбранного
-        for server_name, _, label in self.server_list_items:
+        for server_name, _, label, _ in self.server_list_items:
             if server_name == name:
                 label.setStyleSheet("padding-left: 4px; background: #cceeff;")
             else:
@@ -282,7 +381,137 @@ class ServerManager(QtWidgets.QWidget):
     def open_server_folder(self, server_name):
         server_path = os.path.join(SERVERS_DIR, server_name)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(server_path))
-        
+    
+    def show_create_server_dialog(self):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Создать сервер")
+        layout = QtWidgets.QFormLayout(dialog)
+
+        # Название сервера
+        name_edit = QtWidgets.QLineEdit()
+        layout.addRow("Название сервера:", name_edit)
+
+        # Выбор загрузчика
+        loader_combo = QtWidgets.QComboBox()
+        loader_combo.addItems(["Forge", "Fabric", "Paper"])
+        layout.addRow("Загрузчик:", loader_combo)
+        # Выбор версии сервера (ComboBox вместо LineEdit)
+
+        version_combo = QtWidgets.QComboBox()
+        version_combo.setEditable(True)
+        version_combo.setPlaceholderText("например, 1.20.4")
+
+        # Заполняем список популярных версий (можно расширить)
+        common_versions = [
+            "1.20.4", "1.20.1", "1.19.4", "1.18.2", "1.17.1", "1.16.5", "1.12.2", "1.8.9"
+        ]
+        version_combo.addItems(common_versions)
+        layout.addRow("Версия Minecraft:", version_combo)
+
+        # Кнопки
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        layout.addRow(btn_box)
+
+        def on_accept():
+            name = name_edit.text().strip()
+            loader = loader_combo.currentText()
+            version = version_combo.currentText().strip()
+            if not name:
+                QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Введите название сервера.")
+                return
+            if not version:
+                QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Введите версию сервера.")
+                return
+            server_path = os.path.join(SERVERS_DIR, name)
+            if os.path.exists(server_path):
+                QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Сервер с таким именем уже существует.")
+                return
+            os.makedirs(server_path, exist_ok=True)
+
+            # Скачиваем и устанавливаем сервер
+            try:
+                import urllib.request
+
+                if loader == "Paper":
+                    # Получаем билд PaperMC
+                    api_url = f"https://api.papermc.io/v2/projects/paper/versions/{version}"
+                    with urllib.request.urlopen(api_url) as resp:
+                        data = json.load(resp)
+                    builds = data.get("builds", [])
+                    if not builds:
+                        raise Exception("Не найдены билды Paper для этой версии")
+                    build = builds[-1]
+                    jar_url = f"https://api.papermc.io/v2/projects/paper/versions/{version}/builds/{build}/downloads/paper-{version}-{build}.jar"
+                    jar_path = os.path.join(server_path, "server.jar")
+                    urllib.request.urlretrieve(jar_url, jar_path)
+                    # Создаём start.bat
+                    with open(os.path.join(server_path, "start.bat"), "w", encoding="utf-8") as f:
+                        f.write('java -Xmx4G -jar server.jar nogui\npause\n')
+
+                elif loader == "Fabric":
+                    # Скачиваем fabric installer
+                    fabric_installer_url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.0/fabric-installer-1.0.0.jar"
+                    installer_path = os.path.join(server_path, "fabric-installer.jar")
+                    urllib.request.urlretrieve(fabric_installer_url, installer_path)
+                    # Запускаем установщик
+                    subprocess.check_call([
+                        sys.executable, "-m", "pip", "install", "requests"
+                    ])
+                    subprocess.check_call([
+                        "java", "-jar", installer_path, "server", "-mcversion", version, "-downloadMinecraft"
+                    ], cwd=server_path)
+                    # Создаём start.bat
+                    with open(os.path.join(server_path, "start.bat"), "w", encoding="utf-8") as f:
+                        f.write('java -Xmx4G -jar fabric-server-launch.jar nogui\npause\n')
+                elif loader == "Forge":
+                    # Получаем ссылку на Forge installer
+                    forge_meta_url = f"https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+                    meta = requests.get(forge_meta_url).json()
+                    key = f"{version}-recommended"
+                    if key not in meta["promos"]:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Не найдена рекомендуемая версия Forge для этой версии Minecraft.")
+                        shutil.rmtree(server_path)
+                        return
+                    forge_version = meta["promos"][key]
+                    forge_installer_url = f"https://maven.minecraftforge.net/net/minecraftforge/forge/{forge_version}/forge-{forge_version}-installer.jar"
+                    installer_path = os.path.join(server_path, "forge-installer.jar")
+                    urllib.request.urlretrieve(forge_installer_url, installer_path)
+                    # Запускаем установщик
+                    subprocess.check_call([
+                        "java", "-jar", installer_path, "--installServer"
+                    ], cwd=server_path)
+                    # Находим forge-*-universal.jar
+                    jars = [f for f in os.listdir(server_path) if f.startswith("forge-") and f.endswith(".jar") and "installer" not in f]
+                    if jars:
+                        jar_name = jars[0]
+                        with open(os.path.join(server_path, "start.bat"), "w", encoding="utf-8") as f:
+                            f.write(f'java -Xmx4G -jar {jar_name} nogui\npause\n')
+                    else:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Не удалось найти forge jar после установки.")
+                        shutil.rmtree(server_path)
+                        return
+                # Создаём eula.txt
+                with open(os.path.join(server_path, "eula.txt"), "w", encoding="utf-8") as f:
+                    f.write("eula=true\n")
+                QtWidgets.QMessageBox.information(dialog, "Успех", "Сервер успешно создан!")
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dialog, "Ошибка", f"Ошибка при создании сервера:\n{e}")
+                shutil.rmtree(server_path)
+                return
+
+            self.load_servers()
+            dialog.accept()
+           
+
+            self.load_servers()
+            dialog.accept()
+
+        btn_box.accepted.connect(on_accept)
+        btn_box.rejected.connect(dialog.reject)
+        dialog.exec()
+
+
+    
     def start_server(self):
         server_name = self.get_selected_server()
         if not server_name:
@@ -303,11 +532,14 @@ class ServerManager(QtWidgets.QWidget):
         self.process.setWorkingDirectory(server_path)
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
-        self.process.finished.connect(self.process_finished)
+        self.process.finished.connect(self.process_finished)        
         self.process.start('cmd.exe', ['/c', bat_file])
 
         self.stop_button.setEnabled(True)
         self.send_command_button.setEnabled(True)
+        
+        # Установить статус "running"
+        self.set_server_status(server_name, "running")
 
     def stop_server(self):
         if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
@@ -318,9 +550,11 @@ class ServerManager(QtWidgets.QWidget):
                 pass
             self.process.kill()
             self.process = None
-            self.log_output.append("\nСервер остановлен.")
             self.stop_button.setEnabled(False)
             self.send_command_button.setEnabled(False)
+            # Установить статус "stopped"
+            if self.selected_server:
+                self.set_server_status(self.selected_server, "stopped")
 
     def send_command(self):
         if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
@@ -333,19 +567,29 @@ class ServerManager(QtWidgets.QWidget):
                     QtWidgets.QMessageBox.warning(self, "Ошибка", "Не удалось отправить команду.")
                 self.command_input.clear()
 
+
+
     def handle_stdout(self):
+        if not self.process:
+            return
         data = self.process.readAllStandardOutput().data().decode('cp866', errors='replace')
         self.log_output.append(data)
         self.update_players_list(data)
+
+
 
     def handle_stderr(self):
         data = self.process.readAllStandardError().data().decode('cp866', errors='replace')
         self.log_output.append(data)
 
+
+
     def process_finished(self):
         self.log_output.append("\nСервер завершил работу.")
         self.stop_button.setEnabled(False)
         self.send_command_button.setEnabled(False)
+
+
 
     def update_players_list(self, log_data):
         # Отслеживаем вход и выход игроков по сообщениям "* joined the game" и "* left the game"
@@ -363,6 +607,11 @@ class ServerManager(QtWidgets.QWidget):
 
         self.players_list.clear()
         self.players_list.addItems(sorted(self._current_players))
+
+
+
+
+
 
     def closeEvent(self, event):
         if self.process:
