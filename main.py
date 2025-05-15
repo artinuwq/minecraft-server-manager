@@ -1,32 +1,51 @@
-import os
+import json, os, sys
 from PyQt6 import QtWidgets, QtCore, QtGui
-import sys
 import re
 import zipfile
 import shutil
-import json
-import subprocess
-import requests
+import subprocess, requests
+# config import SERVERS_DIR # Укажи путь к папке с серверами
 
-from config import SERVERS_DIR # Укажи путь к папке с серверами
+
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+SERVERS_DIR = None
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    # Значение по умолчанию
+    return {"servers_dir": os.path.abspath("servers")}
+
+def save_config(config):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
 
 def list_servers():
+    global SERVERS_DIR
+    if not SERVERS_DIR or not os.path.exists(SERVERS_DIR):
+        os.makedirs(SERVERS_DIR, exist_ok=True)
+        return []
     return [
         name for name in os.listdir(SERVERS_DIR)
         if os.path.isdir(os.path.join(SERVERS_DIR, name))
         and os.path.isfile(os.path.join(SERVERS_DIR, name, 'eula.txt'))
     ]
-
 class ServerManager(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Minecraft Server Manager")
         self.resize(1400, 800)
         # Установить иконку окна (замени путь на свой файл PNG/ICO)
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
 
+        # Сначала загружаем конфиг!
+        self.config = load_config()
+        global SERVERS_DIR
+        if not self.config.get("servers_dir") or not os.path.isdir(self.config.get("servers_dir")):
+            self.choose_servers_dir_dialog()
+        SERVERS_DIR = self.config.get("servers_dir", os.path.abspath("servers"))
         # Основной горизонтальный layout
         main_layout = QtWidgets.QHBoxLayout(self)
 
@@ -45,7 +64,6 @@ class ServerManager(QtWidgets.QWidget):
         self.create_server_button = QtWidgets.QPushButton("Создать сервер")
         self.create_server_button.clicked.connect(self.show_create_server_dialog)
         left_panel.addWidget(self.create_server_button)
-
         left_panel.addWidget(self.server_list_widget)
 
         # Кнопки старт/стоп
@@ -56,6 +74,7 @@ class ServerManager(QtWidgets.QWidget):
         btn_layout.addWidget(self.start_button)
         btn_layout.addWidget(self.stop_button)
         left_panel.addLayout(btn_layout)
+
         # Список игроков
         left_panel.addWidget(QtWidgets.QLabel("Игроки:"))
         self.players_list = QtWidgets.QListWidget()
@@ -67,20 +86,22 @@ class ServerManager(QtWidgets.QWidget):
 
         # Правая панель (Консоль и ввод команд)
         right_panel = QtWidgets.QVBoxLayout()
+
+        # Кнопка "Настройки" (справа сверху)
+        self.settings_button = QtWidgets.QPushButton("⚙ Настройки")
+        self.settings_button.setFixedWidth(120)
+        self.settings_button.clicked.connect(self.show_settings_dialog)
+
+        # Обертка для выравнивания кнопки вправо
+        settings_layout = QtWidgets.QHBoxLayout()
+        settings_layout.addStretch(1)
+        settings_layout.addWidget(self.settings_button)
+        right_panel.addLayout(settings_layout)
+
         right_panel.addWidget(QtWidgets.QLabel("Консоль:"))
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
         right_panel.addWidget(self.log_output, stretch=1)
-
-        # Удаляем лишние пустые строки между сообщениями в консоли
-        def append_log(text):
-            # Удаляем двойные пустые строки
-            cleaned = re.sub(r'\n{3,}', '\n\n', text)
-            self.log_output.moveCursor(QtGui.QTextCursor.End)
-            self.log_output.insertPlainText(cleaned)
-            self.log_output.moveCursor(QtGui.QTextCursor.End)
-
-        self.append_log = append_log
 
         # Ввод команд
         cmd_layout = QtWidgets.QHBoxLayout()
@@ -95,6 +116,7 @@ class ServerManager(QtWidgets.QWidget):
         # Добавляем панели в основной layout
         main_layout.addLayout(left_panel, stretch=0)
         main_layout.addLayout(right_panel, stretch=1)
+        self.setLayout(main_layout)
 
         # Сигналы
         self.command_input.returnPressed.connect(self.send_command)
@@ -102,13 +124,44 @@ class ServerManager(QtWidgets.QWidget):
         self.stop_button.clicked.connect(self.stop_server)
         self.send_command_button.clicked.connect(self.send_command)
         self.process = None
-
         self.selected_server = None
 
         # Для статусов серверов
         self.server_status = {}  # server_name: "running"/"error"/"stopped"
 
         self.load_servers()
+    
+
+    def choose_servers_dir_dialog(self):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Выберите папку для серверов")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        label = QtWidgets.QLabel("Выберите, где будут храниться ваши сервера Minecraft:")
+        layout.addWidget(label)
+
+        btn_create = QtWidgets.QPushButton("Создать новую папку рядом с программой")
+        btn_choose = QtWidgets.QPushButton("Выбрать существующую папку")
+        layout.addWidget(btn_create)
+        layout.addWidget(btn_choose)
+
+        def create_new():
+            new_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "servers"))
+            os.makedirs(new_dir, exist_ok=True)
+            self.config["servers_dir"] = new_dir
+            save_config(self.config)
+            dialog.accept()
+
+        def choose_existing():
+            folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Выберите папку для серверов")
+            if folder:
+                self.config["servers_dir"] = folder
+                save_config(self.config)
+                dialog.accept()
+
+        btn_create.clicked.connect(create_new)
+        btn_choose.clicked.connect(choose_existing)
+
+        dialog.exec()
 
     def get_server_status(self, server_name):
         # Если сервер сейчас выбран и процесс запущен
@@ -121,6 +174,43 @@ class ServerManager(QtWidgets.QWidget):
                 return "stopped"
         # Если есть сохранённый статус
         return self.server_status.get(server_name, "stopped")
+    
+    def show_settings_dialog(self):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Настройки")
+        dialog.setFixedSize(500, 200)
+        layout = QtWidgets.QFormLayout(dialog)
+
+        dir_edit = QtWidgets.QLineEdit(self.config.get("servers_dir", ""))
+        browse_btn = QtWidgets.QPushButton("Выбрать...")
+        def browse():
+            directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Выберите папку для серверов", dir_edit.text())
+            if directory:
+                dir_edit.setText(directory)
+        browse_btn.clicked.connect(browse)
+
+        dir_layout = QtWidgets.QHBoxLayout()
+        dir_layout.addWidget(dir_edit)
+        dir_layout.addWidget(browse_btn)
+        layout.addRow("Папка серверов:", dir_layout)
+
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        layout.addRow(btn_box)
+
+        def on_accept():
+            new_dir = dir_edit.text().strip()
+            if not new_dir or not os.path.isdir(new_dir):
+                QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Укажите существующую папку.")
+                return
+            self.config["servers_dir"] = new_dir
+            save_config(self.config)
+            global SERVERS_DIR
+            SERVERS_DIR = new_dir
+            self.load_servers()
+            dialog.accept()
+        btn_box.accepted.connect(on_accept)
+        btn_box.rejected.connect(dialog.reject)
+        dialog.exec()
 
     def set_server_status(self, server_name, status):
         self.server_status[server_name] = status
