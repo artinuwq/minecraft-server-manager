@@ -44,10 +44,12 @@ class ServerManager(QtWidgets.QWidget):
             self.setWindowIcon(QtGui.QIcon(icon_path))
 
         # --- Загрузка конфигурации и установка папки серверов ---
-        self.config = load_config()
         global SERVERS_DIR
-        if not self.config.get("servers_dir") or not os.path.isdir(self.config.get("servers_dir")):
-            self.choose_servers_dir_dialog()
+        if not os.path.exists(CONFIG_PATH):
+            self.config = load_config()
+            self.first_config()
+        else:
+            self.config = load_config()
         SERVERS_DIR = self.config.get("servers_dir", os.path.abspath("servers"))
 
         # --- Основной layout ---
@@ -210,30 +212,67 @@ class ServerManager(QtWidgets.QWidget):
         else:
             self.text_label.setText("Выбранный сервер:")
 
-    def choose_servers_dir_dialog(self):
+    def first_config(self):
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Выберите папку для серверов")
-        layout = QtWidgets.QVBoxLayout(dialog)
-        label = QtWidgets.QLabel("Выберите, где будут храниться ваши сервера Minecraft:")
-        layout.addWidget(label)
-        btn_create = QtWidgets.QPushButton("Создать новую папку рядом с программой")
-        btn_choose = QtWidgets.QPushButton("Выбрать существующую папку")
-        layout.addWidget(btn_create)
-        layout.addWidget(btn_choose)
-        def create_new():
-            new_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "servers"))
-            os.makedirs(new_dir, exist_ok=True)
+        dialog.setWindowTitle("Первичная настройка")
+        dialog.setFixedSize(700, 200)
+        layout = QtWidgets.QFormLayout(dialog)
+
+        # --- Директория по умолчанию ---
+        default_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "servers"))
+        dir_edit = QtWidgets.QLineEdit(default_dir)
+        browse_btn = QtWidgets.QPushButton("Обзор...")
+
+        def browse():
+            directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Выберите папку для серверов", dir_edit.text())
+            if directory:
+                dir_edit.setText(directory)
+
+        browse_btn.clicked.connect(browse)
+        dir_layout = QtWidgets.QHBoxLayout()
+        dir_layout.addWidget(dir_edit)
+        dir_layout.addWidget(browse_btn)
+        layout.addRow("Папка серверов:", dir_layout)
+
+        # --- Список сетей ---
+        net_combo = QtWidgets.QComboBox()
+        networks = []
+        net_map = {}
+        for iface, addrs in psutil.net_if_addrs().items():
+            ip_list = [addr.address for addr in addrs if addr.family == socket.AF_INET and not addr.address.startswith("127.")]
+            if ip_list:
+                networks.append(iface)
+                net_map[iface] = ip_list
+        if not networks:
+            networks = ["localhost"]
+            net_map["localhost"] = ["127.0.0.1"]
+
+        net_combo.addItems(networks)
+        layout.addRow("Сеть для отображения:", net_combo)
+
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        layout.addRow(btn_box)
+
+        def on_accept():
+            new_dir = dir_edit.text().strip()
+            if not new_dir:
+                QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Укажите папку для серверов.")
+                return
+            if not os.path.isdir(new_dir):
+                try:
+                    os.makedirs(new_dir, exist_ok=True)
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(dialog, "Ошибка", f"Не удалось создать папку:\n{e}")
+                    return
             self.config["servers_dir"] = new_dir
+            self.config["selected_network"] = net_combo.currentText()
+            iface = net_combo.currentText()
+            ip_list = net_map.get(iface, [])
+            self.config["selected_ip"] = ip_list[0] if ip_list else "127.0.0.1"
             save_config(self.config)
             dialog.accept()
-        def choose_existing():
-            folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Выберите папку для серверов")
-            if folder:
-                self.config["servers_dir"] = folder
-                save_config(self.config)
-                dialog.accept()
-        btn_create.clicked.connect(create_new)
-        btn_choose.clicked.connect(choose_existing)
+
+        btn_box.accepted.connect(on_accept)
         dialog.exec()
 
     def get_server_status(self, server_name):
@@ -245,11 +284,10 @@ class ServerManager(QtWidgets.QWidget):
             else:
                 return "stopped"
         return self.server_status.get(server_name, "stopped")
-
     def show_settings_dialog(self):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.setFixedSize(500, 180)
+        dialog.setFixedSize(500, 140)
         layout = QtWidgets.QFormLayout(dialog)
         dir_edit = QtWidgets.QLineEdit(self.config.get("servers_dir", ""))
         browse_btn = QtWidgets.QPushButton("Выбрать...")
@@ -296,6 +334,10 @@ class ServerManager(QtWidgets.QWidget):
                 return
             self.config["servers_dir"] = new_dir
             self.config["selected_network"] = net_combo.currentText()
+            # Выбираем первый IP из выбранной сети
+            iface = net_combo.currentText()
+            ip_list = net_map.get(iface, [])
+            self.config["selected_ip"] = ip_list[0] if ip_list else "127.0.0.1"
             save_config(self.config)
             global SERVERS_DIR
             SERVERS_DIR = new_dir
