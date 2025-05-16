@@ -5,6 +5,8 @@ import re
 import subprocess
 import urllib.request
 from PyQt6 import QtWidgets, QtGui, QtCore
+import socket
+import psutil
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 SERVERS_DIR = None
@@ -35,44 +37,60 @@ class ServerManager(QtWidgets.QWidget):
         super().__init__()
         self.setWindowTitle("Minecraft Server Manager")
         self.resize(1400, 800)
+
+        # --- Иконка окна ---
         icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
 
+        # --- Загрузка конфигурации и установка папки серверов ---
         self.config = load_config()
         global SERVERS_DIR
         if not self.config.get("servers_dir") or not os.path.isdir(self.config.get("servers_dir")):
             self.choose_servers_dir_dialog()
         SERVERS_DIR = self.config.get("servers_dir", os.path.abspath("servers"))
+
+        # --- Основной layout ---
         main_layout = QtWidgets.QHBoxLayout(self)
 
+        # --- Левая панель ---
         left_panel = QtWidgets.QVBoxLayout()
         left_panel.addWidget(QtWidgets.QLabel("Серверы:"))
+
+        # --- Список серверов ---
         self.server_list_widget = QtWidgets.QWidget()
         self.server_list_layout = QtWidgets.QVBoxLayout(self.server_list_widget)
         self.server_list_layout.setContentsMargins(0, 0, 0, 0)
         self.server_list_layout.setSpacing(2)
         self.server_list_items = []
+
+        # --- Кнопка создания сервера ---
         self.create_server_button = QtWidgets.QPushButton("Создать сервер")
         self.create_server_button.clicked.connect(self.show_create_server_dialog)
         left_panel.addWidget(self.create_server_button)
         left_panel.addWidget(self.server_list_widget)
+
+        # --- Список игроков ---
         left_panel.addWidget(QtWidgets.QLabel("Игроки:"))
         self.players_list = QtWidgets.QListWidget()
         left_panel.addWidget(self.players_list)
         self.players_list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.players_list.customContextMenuRequested.connect(self.show_player_menu)
 
+        # --- Правая панель ---
         right_panel = QtWidgets.QVBoxLayout()
-        # --- Верхняя панель управления выбранным сервером ---
+
+        # --- Верхняя панель выбранного сервера ---
         top_server_panel = QtWidgets.QHBoxLayout()
         self.text_label = QtWidgets.QLabel("Выбранный сервер:")
         top_server_panel.addWidget(self.text_label)
         top_server_panel.addStretch(1)
         top_server_panel.addWidget(QtWidgets.QLabel("ip:"))
+
+        # --- Метка IP ---
         self.ip_label = QtWidgets.QLabel()
         self.ip_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.ip_label.setStyleSheet("font-weight: bold; border: 1px solid #aaa; padding: 2px 8px; background: #eee;")
+        self.ip_label.setStyleSheet("""color: white;font-weight: bold;border: 1px solid #444;padding: 2px 8px;background-color: #222;border-radius: 4px;""")
         self.ip_label.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
         self.ip_label.mousePressEvent = self.show_ip_temporarily
         self.ip_label.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -85,21 +103,21 @@ class ServerManager(QtWidgets.QWidget):
         top_server_panel.addWidget(self.ip_label)
         right_panel.addLayout(top_server_panel)
 
-        # --- Кнопки старт/стоп под названием сервера ---
-        start_stop_panel = QtWidgets.QHBoxLayout()
-        self.top_start_button = QtWidgets.QPushButton("Старт")
-        self.top_start_button.clicked.connect(self.start_server)
-        self.top_stop_button = QtWidgets.QPushButton("Стоп")
-        self.top_stop_button.clicked.connect(self.stop_server)
-        start_stop_panel.addWidget(self.top_start_button)
-        start_stop_panel.addWidget(self.top_stop_button)
-        right_panel.addLayout(start_stop_panel)
+        # --- Кнопки управления сервером ---
+        controls_panel = QtWidgets.QHBoxLayout()
+        controls_panel.setSpacing(10)
 
-        # --- Остальные кнопки управления ---
-        config_quick_panel = QtWidgets.QHBoxLayout()
-        self.config_button = QtWidgets.QPushButton("Конфиг")
-        self.config_button.clicked.connect(self.show_server_config_dialog)
+        # --- Кнопка старт/стоп ---
+        self.top_startstop_button = QtWidgets.QPushButton("Старт")
+        self.top_startstop_button.setFixedWidth(100)
+        self.top_startstop_button.clicked.connect(self.toggle_server)
+        self.top_startstop_button.setStyleSheet("background-color: #4caf50; color: white; font-weight: bold;")
+        controls_panel.addWidget(self.top_startstop_button)
+
+        # --- Кнопка быстрых действий ---
         self.quick_actions_button = QtWidgets.QPushButton("Быстрые действия")
+        self.quick_actions_button.setMinimumWidth(150)
+        self.quick_actions_button.setMaximumWidth(200)
         self.quick_actions_menu = QtWidgets.QMenu(self)
         self.action_whitelist = self.quick_actions_menu.addAction("Включить белый список")
         self.action_restart = self.quick_actions_menu.addAction("Перезапустить сервер")
@@ -110,11 +128,18 @@ class ServerManager(QtWidgets.QWidget):
         self.action_restart.triggered.connect(self.restart_server)
         self.action_reload.triggered.connect(self.reload_server)
         self.action_tickfreeze.triggered.connect(self.tick_freeze)
-        config_quick_panel.addWidget(self.config_button)
-        config_quick_panel.addWidget(self.quick_actions_button)
-        config_quick_panel.addStretch(1)
-        right_panel.addLayout(config_quick_panel)
+        controls_panel.addWidget(self.quick_actions_button)
 
+        # --- Кнопка конфигурации сервера ---
+        self.config_button = QtWidgets.QPushButton("Конфиг")
+        self.config_button.setFixedWidth(100)
+        self.config_button.clicked.connect(self.show_server_config_dialog)
+        controls_panel.addWidget(self.config_button)
+
+        controls_panel.addStretch(1)
+        right_panel.addLayout(controls_panel)
+
+        # --- Кнопка настроек ---
         self.settings_button = QtWidgets.QPushButton("⚙ Настройки")
         self.settings_button.setFixedWidth(120)
         self.settings_button.clicked.connect(self.show_settings_dialog)
@@ -122,10 +147,14 @@ class ServerManager(QtWidgets.QWidget):
         settings_layout.addStretch(1)
         settings_layout.addWidget(self.settings_button)
         right_panel.addLayout(settings_layout)
+
+        # --- Лог консоли ---
         right_panel.addWidget(QtWidgets.QLabel("Консоль:"))
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
         right_panel.addWidget(self.log_output, stretch=1)
+
+        # --- Ввод команды и кнопка отправки ---
         cmd_layout = QtWidgets.QHBoxLayout()
         self.command_input = QtWidgets.QLineEdit()
         self.command_input.setPlaceholderText("Введите команду для сервера")
@@ -134,9 +163,13 @@ class ServerManager(QtWidgets.QWidget):
         cmd_layout.addWidget(self.command_input)
         cmd_layout.addWidget(self.send_command_button)
         right_panel.addLayout(cmd_layout)
+
+        # --- Добавление панелей в основной layout ---
         main_layout.addLayout(left_panel, stretch=0)
         main_layout.addLayout(right_panel, stretch=1)
         self.setLayout(main_layout)
+
+        # --- Привязка событий ---
         self.command_input.returnPressed.connect(self.send_command)
         self.start_button = QtWidgets.QPushButton("Запустить")
         self.stop_button = QtWidgets.QPushButton("Стоп")
@@ -144,13 +177,30 @@ class ServerManager(QtWidgets.QWidget):
         self.start_button.clicked.connect(self.start_server)
         self.stop_button.clicked.connect(self.stop_server)
         self.send_command_button.clicked.connect(self.send_command)
+
+        # --- Переменные состояния ---
         self.process = None
         self.selected_server = None
         self.server_status = {}
+
+        # --- Инициализация интерфейса ---
         self.load_servers()
         self.update_top_buttons()
         self.update_ip_label()
         self.update_selected_server_label()  
+
+
+    def update_top_buttons(self):
+        status = self.get_server_status(self.get_selected_server())
+        if status == "running":
+            self.top_startstop_button.setText("Стоп")
+            # Красная кнопка "Стоп"
+            self.top_startstop_button.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+        else:
+            self.top_startstop_button.setText("Старт")
+            # Зеленая кнопка "Старт"
+            self.top_startstop_button.setStyleSheet("background-color: #4caf50; color: white; font-weight: bold;")
+        self.top_startstop_button.setEnabled(self.get_selected_server() is not None)
 
     def update_selected_server_label(self):
         """Обновляет текст метки выбранного сервера."""
@@ -197,14 +247,13 @@ class ServerManager(QtWidgets.QWidget):
         return self.server_status.get(server_name, "stopped")
 
     def show_settings_dialog(self):
-
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.setFixedSize(500, 100)
+        dialog.setFixedSize(500, 180)
         layout = QtWidgets.QFormLayout(dialog)
         dir_edit = QtWidgets.QLineEdit(self.config.get("servers_dir", ""))
         browse_btn = QtWidgets.QPushButton("Выбрать...")
-        
+
         def browse():
             directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Выберите папку для серверов", dir_edit.text())
             if directory:
@@ -215,9 +264,30 @@ class ServerManager(QtWidgets.QWidget):
         dir_layout.addWidget(dir_edit)
         dir_layout.addWidget(browse_btn)
         layout.addRow("Папка серверов:", dir_layout)
+
+        # --- Список сетей ---
+        net_combo = QtWidgets.QComboBox()
+        networks = []
+        net_map = {}  # network name -> list of IPs
+        for iface, addrs in psutil.net_if_addrs().items():
+            ip_list = [addr.address for addr in addrs if addr.family == socket.AF_INET and not addr.address.startswith("127.")]
+            if ip_list:
+                networks.append(iface)
+                net_map[iface] = ip_list
+        if not networks:
+            networks = ["localhost"]
+            net_map["localhost"] = ["127.0.0.1"]
+
+        net_combo.addItems(networks)
+        selected_net = self.config.get("selected_network")
+        if selected_net in networks:
+            net_combo.setCurrentText(selected_net)
+        else:
+            net_combo.setCurrentIndex(0)
+        layout.addRow("Сеть для отображения:", net_combo)
+
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         layout.addRow(btn_box)
-
 
         def on_accept():
             new_dir = dir_edit.text().strip()
@@ -225,11 +295,14 @@ class ServerManager(QtWidgets.QWidget):
                 QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Укажите существующую папку.")
                 return
             self.config["servers_dir"] = new_dir
+            self.config["selected_network"] = net_combo.currentText()
             save_config(self.config)
             global SERVERS_DIR
             SERVERS_DIR = new_dir
+            self.update_ip_label()
             self.load_servers()
             dialog.accept()
+
         btn_box.accepted.connect(on_accept)
         btn_box.rejected.connect(dialog.reject)
         dialog.exec()
@@ -293,15 +366,10 @@ class ServerManager(QtWidgets.QWidget):
             self.server_list_items.append((server_name, row_widget, label, icon_label))
 
         self.players_list.clear()
-
-    def update_top_buttons(self):
-        status = self.get_server_status(self.get_selected_server())
-        self.top_start_button.setEnabled(status == "stopped")
-        self.top_stop_button.setEnabled(status == "running")
-
+        
     def update_ip_label(self):
         server_name = self.get_selected_server()
-        ip = "*.*.*.*"
+        ip = None
         port = "*****"
         if server_name:
             props_path = os.path.join(SERVERS_DIR, server_name, "server.properties")
@@ -309,17 +377,32 @@ class ServerManager(QtWidgets.QWidget):
                 try:
                     with open(props_path, encoding="utf-8") as f:
                         for line in f:
-                            if line.startswith("server-ip="):
-                                ip = line.strip().split("=",1)[1] or "*.*.*.*"
                             if line.startswith("server-port="):
-                                port = line.strip().split("=",1)[1] or "*****"
+                                port = line.strip().split("=", 1)[1] or "*****"
                 except Exception:
                     pass
+
+        # Получаем список всех IP-адресов пользователя
+        ip_list = []
+        for iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                    ip_list.append(addr.address)
+        if not ip_list:
+            ip_list = ["127.0.0.1"]
+        # Сохраняем выбранный IP в настройках, если есть
+        selected_ip = self.config.get("selected_ip")
+        if selected_ip not in ip_list:
+            selected_ip = ip_list[0]
+            self.config["selected_ip"] = selected_ip
+            save_config(self.config)
+        ip = selected_ip
+
         self._real_ip = f"{ip}:{port}"
         if self._ip_visible or self._ip_always_visible:
             self.ip_label.setText(self._real_ip)
         else:
-            self.ip_label.setText("*"*len(ip)+":"+"*"*len(port))
+            self.ip_label.setText("*" * len(ip) + ":" + "*" * len(port))
 
     def show_ip_temporarily(self, event):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -583,6 +666,7 @@ class ServerManager(QtWidgets.QWidget):
                 elif loader == "Forge":
                     forge_meta_url = f"https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
                     import requests
+
                     meta = requests.get(forge_meta_url).json()
                     # ...дальнейшая логика скачивания Forge...
             except Exception as e:
@@ -593,6 +677,13 @@ class ServerManager(QtWidgets.QWidget):
         btn_box.accepted.connect(on_accept)
         btn_box.rejected.connect(dialog.reject)
         dialog.exec()
+
+    def toggle_server(self):
+        status = self.get_server_status(self.get_selected_server())
+        if status == "running":
+            self.stop_server()
+        else:
+            self.start_server()
 
     def start_server(self):
         server_name = self.get_selected_server()
@@ -614,9 +705,9 @@ class ServerManager(QtWidgets.QWidget):
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.process.finished.connect(self.process_finished)
         self.process.start('cmd.exe', ['/c', bat_file])
-        self.stop_button.setEnabled(True)
         self.send_command_button.setEnabled(True)
         self.set_server_status(server_name, "running")
+        self.update_top_buttons()
 
     def stop_server(self):
         if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
@@ -627,14 +718,13 @@ class ServerManager(QtWidgets.QWidget):
                 pass
             self.process.kill()
             self.process = None
-            self.stop_button.setEnabled(False)
             self.send_command_button.setEnabled(False)
             if self.selected_server:
                 self.set_server_status(self.selected_server, "stopped")
+            self.update_top_buttons()
 
     def process_finished(self):
         self.log_output.append("\nСервер завершил работу.")
-        self.stop_button.setEnabled(False)
         self.send_command_button.setEnabled(False)
         if self.process and self.process.exitStatus() == QtCore.QProcess.ExitStatus.CrashExit:
             self.set_server_status(self.selected_server, "error")
@@ -642,6 +732,7 @@ class ServerManager(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Краш сервера", "Сервер завершился с ошибкой (краш). Проверьте логи!")
         else:
             self.set_server_status(self.selected_server, "stopped")
+        self.update_top_buttons()
 
     def handle_stdout(self):
         if self.process:
