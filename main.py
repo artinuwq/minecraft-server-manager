@@ -26,11 +26,19 @@ def list_servers():
     if not SERVERS_DIR or not os.path.exists(SERVERS_DIR):
         os.makedirs(SERVERS_DIR, exist_ok=True)
         return []
-    return [
-        name for name in os.listdir(SERVERS_DIR)
-        if os.path.isdir(os.path.join(SERVERS_DIR, name))
-        and os.path.isfile(os.path.join(SERVERS_DIR, name, 'eula.txt'))
-    ]
+    servers = []
+    for name in os.listdir(SERVERS_DIR):
+        server_dir = os.path.join(SERVERS_DIR, name)
+        if not os.path.isdir(server_dir):
+            continue
+        # Ищем jar-файл сервера
+        jar_files = [
+            f for f in os.listdir(server_dir)
+            if f.endswith(".jar") and not f.endswith("installer.jar")
+        ]
+        if jar_files:
+            servers.append(name)
+    return servers
 
 class ServerManager(QtWidgets.QWidget):
     def __init__(self):
@@ -284,6 +292,7 @@ class ServerManager(QtWidgets.QWidget):
             else:
                 return "stopped"
         return self.server_status.get(server_name, "stopped")
+    
     def show_settings_dialog(self):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Настройки")
@@ -663,7 +672,12 @@ class ServerManager(QtWidgets.QWidget):
         version_combo.addItems(common_versions)
         layout.addRow("Версия Minecraft:", version_combo)
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-        layout.addRow(btn_box)
+        layout.addRow(btn_box) 
+
+        def write_start_bat(folder, jar_file):
+            with open(os.path.join(folder, "start.bat"), "w", encoding="utf-8") as f:
+                f.write(f'java -Xmx5G -jar {jar_file} nogui\npause\n')
+
         def on_accept():
             name = name_edit.text().strip()
             loader = loader_combo.currentText()
@@ -678,8 +692,14 @@ class ServerManager(QtWidgets.QWidget):
             if os.path.exists(server_path):
                 QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Сервер с таким именем уже существует.")
                 return
-            os.makedirs(server_path, exist_ok=True)
+            # Создаем временную папку для установки
+            tmp_server_path = server_path + "_tmp"
+            if os.path.exists(tmp_server_path):
+                QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Временная папка для установки уже существует. Удалите её вручную.")
+                return
             try:
+                os.makedirs(tmp_server_path, exist_ok=False)
+                jar_file = None
                 if loader == "Paper":
                     api_url = f"https://api.papermc.io/v2/projects/paper/versions/{version}"
                     with urllib.request.urlopen(api_url) as resp:
@@ -689,33 +709,81 @@ class ServerManager(QtWidgets.QWidget):
                         raise Exception("Не найдены билды Paper для этой версии")
                     build = builds[-1]
                     jar_url = f"https://api.papermc.io/v2/projects/paper/versions/{version}/builds/{build}/downloads/paper-{version}-{build}.jar"
-                    jar_path = os.path.join(server_path, "server.jar")
+                    jar_file = "server.jar"
+                    jar_path = os.path.join(tmp_server_path, jar_file)
                     urllib.request.urlretrieve(jar_url, jar_path)
-                    with open(os.path.join(server_path, "start.bat"), "w", encoding="utf-8") as f:
-                        f.write('java -Xmx4G -jar server.jar nogui\npause\n')
                 elif loader == "Fabric":
-                    fabric_installer_url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.0/fabric-installer-1.0.0.jar"
-                    installer_path = os.path.join(server_path, "fabric-installer.jar")
+                    fabric_installer_url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.2/fabric-installer-1.0.2.jar"
+                    installer_path = os.path.join(tmp_server_path, "fabric-installer.jar")
                     urllib.request.urlretrieve(fabric_installer_url, installer_path)
                     subprocess.check_call([
                         sys.executable, "-m", "pip", "install", "requests"
                     ])
                     subprocess.check_call([
                         "java", "-jar", installer_path, "server", "-mcversion", version, "-downloadMinecraft"
-                    ], cwd=server_path)
-                    with open(os.path.join(server_path, "start.bat"), "w", encoding="utf-8") as f:
-                        f.write('java -Xmx4G -jar fabric-server-launch.jar nogui\npause\n')
+                    ], cwd=tmp_server_path)
+                    jar_file = "fabric-server-launch.jar"
                 elif loader == "Forge":
-                    forge_meta_url = f"https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
-                    import requests
-
-                    meta = requests.get(forge_meta_url).json()
-                    # ...дальнейшая логика скачивания Forge...
+                    forge_meta_url = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+                    installer_path = os.path.join(tmp_server_path, "forge-installer.jar")
+                    try:
+                        req = urllib.request.Request(forge_meta_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req) as resp:
+                            meta = json.load(resp)
+                    except Exception as e:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", f"Не удалось скачать или распарсить meta-файл Forge:\n{e}")
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
+                    key = f"{version}-latest"
+                    if key not in meta["promos"]:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", f"Forge не найден для версии {version}")
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
+                    forge_version = meta["promos"][key]
+                    full_version = f"{version}-{forge_version}"
+                    installer_url = f"https://maven.minecraftforge.net/net/minecraftforge/forge/{full_version}/forge-{full_version}-installer.jar"
+                    try:
+                        req = urllib.request.Request(installer_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req) as resp, open(installer_path, "wb") as out_file:
+                            out_file.write(resp.read())
+                    except Exception as e:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", f"Не удалось скачать Forge installer:\n{e}")
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
+                    try:
+                        subprocess.check_call([
+                            "java", "-jar", installer_path, "--installServer"
+                        ], cwd=tmp_server_path)
+                    except Exception as e:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", f"Ошибка при установке Forge:\n{e}")
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
+                    # Try to find the correct forge jar
+                    jar_candidates = [f for f in os.listdir(tmp_server_path) if f.startswith("forge-") and f.endswith(".jar") and "installer" not in f]
+                    if jar_candidates:
+                        jar_file = jar_candidates[0]
+                    else:
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", "Не найден forge-jar после установки.")
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
+                # Создаем start.bat для любого типа загрузчика
+                if jar_file:
+                    write_start_bat(tmp_server_path, jar_file)
+                # Если всё успешно, переименовываем временную папку в основную
+                os.rename(tmp_server_path, server_path)
             except Exception as e:
+                import shutil
+                shutil.rmtree(tmp_server_path, ignore_errors=True)
                 QtWidgets.QMessageBox.critical(dialog, "Ошибка", f"Ошибка при создании сервера: {e}")
                 return
             self.load_servers()
             dialog.accept()
+
         btn_box.accepted.connect(on_accept)
         btn_box.rejected.connect(dialog.reject)
         dialog.exec()
