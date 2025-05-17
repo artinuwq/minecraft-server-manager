@@ -39,6 +39,16 @@ def list_servers():
         if jar_files:
             servers.append(name)
     return servers
+# Защита при запуске из exe
+def resource_path(relative_path):
+    """Возвращает абсолютный путь к ресурсу, работает и для PyInstaller, и для обычного запуска."""
+    if hasattr(sys, '_MEIPASS'):
+        # Если запущено из exe
+        base_path = sys._MEIPASS
+    else:
+        # Если запущено из исходников
+        base_path = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base_path, relative_path)
 
 class ServerManager(QtWidgets.QWidget):
     def __init__(self):
