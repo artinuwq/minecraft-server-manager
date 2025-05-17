@@ -1,24 +1,15 @@
-import os
-import sys
-import json
-import re
-import subprocess
+import os, sys, re, json, subprocess, socket, psutil
 import urllib.request
 from PyQt6 import QtWidgets, QtGui, QtCore
-import socket
-import psutil
-
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
-SERVERS_DIR = None
 
 def load_config():
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, encoding="utf-8") as f:
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as f:
             return json.load(f)
     return {"servers_dir": os.path.abspath("servers")}
 
 def save_config(config):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 def list_servers():
@@ -44,11 +35,18 @@ def resource_path(relative_path):
     """Возвращает абсолютный путь к ресурсу, работает и для PyInstaller, и для обычного запуска."""
     if hasattr(sys, '_MEIPASS'):
         # Если запущено из exe
-        base_path = sys._MEIPASS
+        base_path = os.path.dirname(sys.executable)
     else:
         # Если запущено из исходников
         base_path = os.path.abspath(os.path.dirname(__file__))
     return os.path.join(base_path, relative_path)
+
+
+
+
+config_path = resource_path("config.json")
+SERVERS_DIR = None
+
 
 class ServerManager(QtWidgets.QWidget):
     def __init__(self):
@@ -57,13 +55,13 @@ class ServerManager(QtWidgets.QWidget):
         self.resize(1400, 800)
 
         # --- Иконка окна ---
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        icon_path = resource_path("icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
 
         # --- Загрузка конфигурации и установка папки серверов ---
         global SERVERS_DIR
-        if not os.path.exists(CONFIG_PATH):
+        if not os.path.exists(config_path):
             self.config = load_config()
             self.first_config()
         else:
@@ -237,7 +235,7 @@ class ServerManager(QtWidgets.QWidget):
         layout = QtWidgets.QFormLayout(dialog)
 
         # --- Директория по умолчанию ---
-        default_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "servers"))
+        default_dir = resource_path("servers")
         dir_edit = QtWidgets.QLineEdit(default_dir)
         browse_btn = QtWidgets.QPushButton("Обзор...")
 
@@ -818,6 +816,7 @@ class ServerManager(QtWidgets.QWidget):
         if self.process:
             self.process.kill()
             self.process = None
+            
         self.log_output.clear()
         self.process = QtCore.QProcess(self)
         self.process.setWorkingDirectory(server_path)
