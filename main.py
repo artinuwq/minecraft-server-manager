@@ -43,7 +43,6 @@ def resource_path(relative_path):
 
 config_path = resource_path("config.json")
 SERVERS_DIR = None
-
 class ServerManager(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -64,9 +63,12 @@ class ServerManager(QtWidgets.QWidget):
 
         # --- Левая панель ---
         left_panel = QtWidgets.QVBoxLayout()
-        left_panel.addWidget(QtWidgets.QLabel("Серверы:"))
+        left_panel.setSpacing(10)
 
         # --- Список серверов ---
+        server_group = QtWidgets.QGroupBox("Серверы")
+        server_group_layout = QtWidgets.QVBoxLayout(server_group)
+        
         self.server_list_widget = QtWidgets.QWidget()
         self.server_list_layout = QtWidgets.QVBoxLayout(self.server_list_widget)
         self.server_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -76,20 +78,30 @@ class ServerManager(QtWidgets.QWidget):
         # --- Кнопка создания сервера ---
         self.create_server_button = QtWidgets.QPushButton("Создать сервер")
         self.create_server_button.clicked.connect(self.show_create_server_dialog)
-        left_panel.addWidget(self.create_server_button)
-        left_panel.addWidget(self.server_list_widget)
+        server_group_layout.addWidget(self.create_server_button)
+        server_group_layout.addWidget(self.server_list_widget)
+        
+        left_panel.addWidget(server_group, stretch=1)
 
         # --- Список игроков ---
-        left_panel.addWidget(QtWidgets.QLabel("Игроки:"))
+        players_group = QtWidgets.QGroupBox("Игроки")
+        players_group_layout = QtWidgets.QVBoxLayout(players_group)
         self.players_list = QtWidgets.QListWidget()
-        left_panel.addWidget(self.players_list)
+        players_group_layout.addWidget(self.players_list)
         self.players_list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.players_list.customContextMenuRequested.connect(self.show_player_menu)
+        
+        left_panel.addWidget(players_group, stretch=1)
 
         # --- Правая панель ---
         right_panel = QtWidgets.QVBoxLayout()
+        right_panel.setSpacing(10)
 
-        # --- Верхняя панель выбранного сервера + ip ---
+        # --- Панель информации о сервере ---
+        server_info_panel = QtWidgets.QVBoxLayout()
+        server_info_panel.setSpacing(5)
+        
+        # --- Верхняя строка с названием и IP ---
         top_server_panel = QtWidgets.QHBoxLayout()
         self.text_label = QtWidgets.QLabel("Выбранный сервер:")
         top_server_panel.addWidget(self.text_label)
@@ -108,12 +120,15 @@ class ServerManager(QtWidgets.QWidget):
         self._ip_timer.setSingleShot(True)
         self._ip_timer.timeout.connect(self.hide_ip)
         top_server_panel.addWidget(self.ip_label)
-        right_panel.addLayout(top_server_panel)
+        
+        server_info_panel.addLayout(top_server_panel)
 
-        # --- Надпись статуса сервера (перенесена под выбранный сервер) ---
+        # --- Надпись статуса сервера ---
         self.status_label = QtWidgets.QLabel("Статус: Не выбран")
         self.status_label.setStyleSheet("font-weight: bold; color: #ffffff; padding: 4px;")
-        right_panel.addWidget(self.status_label)
+        server_info_panel.addWidget(self.status_label)
+        
+        right_panel.addLayout(server_info_panel)
 
         # --- Кнопки управления сервером ---
         controls_panel = QtWidgets.QHBoxLayout()
@@ -148,38 +163,39 @@ class ServerManager(QtWidgets.QWidget):
         self.config_button.clicked.connect(self.show_server_config_dialog)
         controls_panel.addWidget(self.config_button)
 
-        controls_panel.addStretch(1)
-        right_panel.addLayout(controls_panel)
+        controls_panel.addStretch(1)  # Добавляем растяжку перед кнопкой настроек
 
-        # --- Кнопка настроек ---
+        # --- Кнопка настроек (теперь справа) ---
         self.settings_button = QtWidgets.QPushButton("⚙ Настройки")
         self.settings_button.setFixedWidth(120)
         self.settings_button.clicked.connect(self.show_settings_dialog)
-        settings_layout = QtWidgets.QHBoxLayout()
-        settings_layout.addStretch(1)
-        settings_layout.addWidget(self.settings_button)
-        right_panel.addLayout(settings_layout)
+        controls_panel.addWidget(self.settings_button)
+
+        right_panel.addLayout(controls_panel)
 
         # --- Лог консоли ---
-        right_panel.addWidget(QtWidgets.QLabel("Консоль:"))
+        console_group = QtWidgets.QGroupBox("Консоль")
+        console_layout = QtWidgets.QVBoxLayout(console_group)
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
-        right_panel.addWidget(self.log_output, stretch=1)
+        console_layout.addWidget(self.log_output)
+        right_panel.addWidget(console_group, stretch=1)
 
         # --- Ввод команды и кнопка отправки ---
-        cmd_layout = QtWidgets.QHBoxLayout()
+        cmd_group = QtWidgets.QGroupBox()
+        cmd_group.setFlat(True)
+        cmd_layout = QtWidgets.QHBoxLayout(cmd_group)
         self.command_input = QtWidgets.QLineEdit()
         self.command_input.setPlaceholderText("Введите команду для сервера")
         self.send_command_button = QtWidgets.QPushButton("Отправить")
         self.send_command_button.setEnabled(False)
         cmd_layout.addWidget(self.command_input)
         cmd_layout.addWidget(self.send_command_button)
-        right_panel.addLayout(cmd_layout)
+        right_panel.addWidget(cmd_group)
 
         # --- Добавление панелей в основной layout ---
-        main_layout.addLayout(left_panel, stretch=0)
-        main_layout.addLayout(right_panel, stretch=1)
-        self.setLayout(main_layout)
+        main_layout.addLayout(left_panel, stretch=1)
+        main_layout.addLayout(right_panel, stretch=2)
 
         # --- Привязка событий ---
         self.command_input.returnPressed.connect(self.send_command)
@@ -199,7 +215,6 @@ class ServerManager(QtWidgets.QWidget):
             self.config = load_config()
         SERVERS_DIR = self.config.get("servers_dir", os.path.abspath("servers"))
 
-
         # --- Переменные состояния ---
         self.process = None
         self.selected_server = None
@@ -209,8 +224,7 @@ class ServerManager(QtWidgets.QWidget):
         self.load_servers()
         self.update_top_buttons()
         self.update_ip_label()
-        self.update_selected_server_label()  
-
+        self.update_selected_server_label()
 
     def update_top_buttons(self):
         status = self.get_server_status(self.get_selected_server())
