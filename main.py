@@ -41,9 +41,6 @@ def resource_path(relative_path):
         base_path = os.path.abspath(os.path.dirname(__file__))
     return os.path.join(base_path, relative_path)
 
-
-
-
 config_path = resource_path("config.json")
 SERVERS_DIR = None
 
@@ -53,20 +50,16 @@ class ServerManager(QtWidgets.QWidget):
         super().__init__()
         self.setWindowTitle("Minecraft Server Manager")
         self.resize(1400, 800)
+        
+        # --- Защита от идиота 2 (от меня походу) ---
+        self._ip_visible = False
+        self._ip_always_visible = False
+
 
         # --- Иконка окна ---
         icon_path = resource_path("icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
-
-        # --- Загрузка конфигурации и установка папки серверов ---
-        global SERVERS_DIR
-        if not os.path.exists(config_path):
-            self.config = load_config()
-            self.first_config()
-        else:
-            self.config = load_config()
-        SERVERS_DIR = self.config.get("servers_dir", os.path.abspath("servers"))
 
         # --- Основной layout ---
         main_layout = QtWidgets.QHBoxLayout(self)
@@ -113,8 +106,6 @@ class ServerManager(QtWidgets.QWidget):
         self.ip_label.mousePressEvent = self.show_ip_temporarily
         self.ip_label.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.ip_label.customContextMenuRequested.connect(self.show_ip_context_menu)
-        self._ip_visible = False
-        self._ip_always_visible = False
         self._ip_timer = QtCore.QTimer(self)
         self._ip_timer.setSingleShot(True)
         self._ip_timer.timeout.connect(self.hide_ip)
@@ -195,6 +186,17 @@ class ServerManager(QtWidgets.QWidget):
         self.start_button.clicked.connect(self.start_server)
         self.stop_button.clicked.connect(self.stop_server)
         self.send_command_button.clicked.connect(self.send_command)
+        
+
+        # --- Загрузка конфигурации и установка папки серверов ---
+        global SERVERS_DIR
+        if not os.path.exists(config_path):
+            self.config = load_config()
+            self.first_config()
+        else:
+            self.config = load_config()
+        SERVERS_DIR = self.config.get("servers_dir", os.path.abspath("servers"))
+
 
         # --- Переменные состояния ---
         self.process = None
@@ -231,7 +233,7 @@ class ServerManager(QtWidgets.QWidget):
     def first_config(self):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Первичная настройка")
-        dialog.setFixedSize(700, 200)
+        dialog.setFixedSize(700, 350)
         layout = QtWidgets.QFormLayout(dialog)
 
         # --- Директория по умолчанию ---
@@ -266,6 +268,63 @@ class ServerManager(QtWidgets.QWidget):
         net_combo.addItems(networks)
         layout.addRow("Сеть для отображения:", net_combo)
 
+        # --- Расширенные параметры ---
+        advanced_group = QtWidgets.QGroupBox("Расширенные параметры")
+        advanced_group.setCheckable(True)
+        advanced_group.setChecked(False)
+        adv_layout = QtWidgets.QFormLayout(advanced_group)
+
+        # --- Java path ---
+        java_path_edit = QtWidgets.QLineEdit(self.config.get("java_path", "java"))
+        java_browse_btn = QtWidgets.QPushButton("Обзор...")
+
+        def browse_java():
+            file_dialog = QtWidgets.QFileDialog(self, "Укажите путь к java", java_path_edit.text())
+            file_dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+            if file_dialog.exec():
+                files = file_dialog.selectedFiles()
+                if files:
+                    java_path_edit.setText(files[0])
+
+        java_browse_btn.clicked.connect(browse_java)
+        java_layout = QtWidgets.QHBoxLayout()
+        java_layout.addWidget(java_path_edit)
+        java_layout.addWidget(java_browse_btn)
+        adv_layout.addRow("Путь к java:", java_layout)
+
+        # --- Ползунок выбора максимальной оперативки ---
+        total_gb = max(1, int(psutil.virtual_memory().total // (1024 ** 3)))
+        ram_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        ram_slider.setMinimum(1)
+        ram_slider.setMaximum(total_gb)
+        ram_slider.setValue(min(5, total_gb))
+        ram_slider.setTickInterval(1)
+        ram_slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        ram_label = QtWidgets.QLabel(f"{ram_slider.value()} ГБ")
+        ram_warning = QtWidgets.QLabel("")
+        ram_warning.setStyleSheet("color: orange; font-size: 11px;")
+        ram_warning.setWordWrap(True)
+        def update_ram_label(val):
+            ram_label.setText(f"{val} ГБ")
+            percent = val / total_gb
+            if percent > 0.6:
+                ram_warning.setText("Внимание: выделено больше 60% всей оперативной памяти. Сервер может не запуститься или система станет нестабильной.")
+            elif total_gb > 8 and val < 2:
+                ram_warning.setText("Внимание: выделено мало оперативной памяти. Сервер может работать нестабильно при таком объёме ОЗУ.")
+            else:
+                ram_warning.setText("")
+
+        ram_slider.valueChanged.connect(update_ram_label)
+        update_ram_label(ram_slider.value())
+
+        ram_layout = QtWidgets.QHBoxLayout()
+        ram_layout.addWidget(ram_slider)
+        ram_layout.addWidget(ram_label)
+        adv_layout.addRow("Выделено ОЗУ:", ram_layout)
+        adv_layout.addRow("", ram_warning)
+
+        layout.addRow(advanced_group)
+
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         layout.addRow(btn_box)
 
@@ -285,7 +344,19 @@ class ServerManager(QtWidgets.QWidget):
             iface = net_combo.currentText()
             ip_list = net_map.get(iface, [])
             self.config["selected_ip"] = ip_list[0] if ip_list else "127.0.0.1"
+            if advanced_group.isChecked():
+                self.config["java_path"] = java_path_edit.text().strip() or "java"
+                self.config["max_ram_gb"] = ram_slider.value()
+                self.config["advanced_option"] = True
+            else:
+                self.config["java_path"] = "java"
+                self.config["max_ram_gb"] = 5
+                self.config["advanced_option"] = False
             save_config(self.config)
+            global SERVERS_DIR
+            SERVERS_DIR = new_dir
+            self.update_ip_label()
+            self.load_servers()
             dialog.accept()
 
         btn_box.accepted.connect(on_accept)
@@ -300,11 +371,11 @@ class ServerManager(QtWidgets.QWidget):
             else:
                 return "stopped"
         return self.server_status.get(server_name, "stopped")
-    
+
     def show_settings_dialog(self):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.setFixedSize(500, 140)
+        dialog.setFixedSize(500, 350)
         layout = QtWidgets.QFormLayout(dialog)
         dir_edit = QtWidgets.QLineEdit(self.config.get("servers_dir", ""))
         browse_btn = QtWidgets.QPushButton("Выбрать...")
@@ -341,6 +412,65 @@ class ServerManager(QtWidgets.QWidget):
             net_combo.setCurrentIndex(0)
         layout.addRow("Сеть для отображения:", net_combo)
 
+        # --- Расширенные параметры ---
+        advanced_group = QtWidgets.QGroupBox("Расширенные параметры")
+        advanced_group.setCheckable(True)
+        # Загружаем состояние advanced_group из конфига, по умолчанию False
+        advanced_group.setChecked(self.config.get("advanced_option", False))
+        adv_layout = QtWidgets.QFormLayout(advanced_group)
+
+        # --- Java path ---
+        java_path_edit = QtWidgets.QLineEdit(self.config.get("java_path", "java"))
+        java_browse_btn = QtWidgets.QPushButton("Выбрать...")
+
+        def browse_java():
+            file_dialog = QtWidgets.QFileDialog(self, "Укажите путь к java", java_path_edit.text())
+            file_dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+            if file_dialog.exec():
+                files = file_dialog.selectedFiles()
+                if files:
+                    java_path_edit.setText(files[0])
+
+        java_browse_btn.clicked.connect(browse_java)
+        java_layout = QtWidgets.QHBoxLayout()
+        java_layout.addWidget(java_path_edit)
+        java_layout.addWidget(java_browse_btn)
+        adv_layout.addRow("Путь к java:", java_layout)
+
+        # --- Ползунок выбора максимальной оперативки ---
+        total_gb = max(1, int(psutil.virtual_memory().total // (1024 ** 3)))
+        max_ram_gb = self.config.get("max_ram_gb", min(5, total_gb))
+        ram_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        ram_slider.setMinimum(1)
+        ram_slider.setMaximum(total_gb)
+        ram_slider.setValue(max_ram_gb)
+        ram_slider.setTickInterval(1)
+        ram_slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        ram_label = QtWidgets.QLabel(f"{ram_slider.value()} ГБ")
+        ram_warning = QtWidgets.QLabel("")
+        ram_warning.setStyleSheet("color: orange; font-size: 11px;")
+        ram_warning.setWordWrap(True)
+        def update_ram_label(val):
+            ram_label.setText(f"{val} ГБ")
+            percent = val / total_gb
+            if percent > 0.6:
+                ram_warning.setText("Внимание: выделено больше 60% всей оперативной памяти. Сервер может не запуститься или система станет нестабильной.")
+            elif total_gb > 8 and val < 2:
+                ram_warning.setText("Внимание: выделено мало оперативной памяти. Сервер может работать нестабильно при таком объёме ОЗУ.")
+            else:
+                ram_warning.setText("")
+
+        ram_slider.valueChanged.connect(update_ram_label)
+        update_ram_label(ram_slider.value())
+
+        ram_layout = QtWidgets.QHBoxLayout()
+        ram_layout.addWidget(ram_slider)
+        ram_layout.addWidget(ram_label)
+        adv_layout.addRow("Выделено ОЗУ:", ram_layout)
+        adv_layout.addRow("", ram_warning)
+
+        layout.addRow(advanced_group)
+
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         layout.addRow(btn_box)
 
@@ -355,6 +485,17 @@ class ServerManager(QtWidgets.QWidget):
             iface = net_combo.currentText()
             ip_list = net_map.get(iface, [])
             self.config["selected_ip"] = ip_list[0] if ip_list else "127.0.0.1"
+            java_path = None
+            if advanced_group.isChecked():
+                java_path = java_path_edit.text().strip()
+                if not java_path:
+                    java_path = "java"
+                self.config["java_path"] = java_path
+                self.config["max_ram_gb"] = ram_slider.value()
+                self.config["advanced_option"] = advanced_group.isChecked()
+            else:
+                self.config["java_path"] = "java"
+                self.config["max_ram_gb"] = 5
             save_config(self.config)
             global SERVERS_DIR
             SERVERS_DIR = new_dir
@@ -721,15 +862,29 @@ class ServerManager(QtWidgets.QWidget):
                     jar_path = os.path.join(tmp_server_path, jar_file)
                     urllib.request.urlretrieve(jar_url, jar_path)
                 elif loader == "Fabric":
-                    fabric_installer_url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.2/fabric-installer-1.0.2.jar"
+                    fabric_installer_url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/0.11.2/fabric-installer-0.11.2.jar"
                     installer_path = os.path.join(tmp_server_path, "fabric-installer.jar")
                     urllib.request.urlretrieve(fabric_installer_url, installer_path)
+                    if not os.path.exists(installer_path):
+                        QtWidgets.QMessageBox.warning(dialog, "Ошибка", f"Не удалось скачать fabric-installer.jar по адресу:\n{fabric_installer_url}")
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
                     subprocess.check_call([
                         sys.executable, "-m", "pip", "install", "requests"
                     ])
-                    subprocess.check_call([
+                    result = subprocess.run([
                         "java", "-jar", installer_path, "server", "-mcversion", version, "-downloadMinecraft"
-                    ], cwd=tmp_server_path)
+                    ], cwd=tmp_server_path, capture_output=True, text=True)
+
+                    if result.returncode != 0:
+                        QtWidgets.QMessageBox.critical(
+                            dialog, "Ошибка",
+                            f"Ошибка при установке Fabric:\n{result.stderr}\n{result.stdout}"
+                        )
+                        import shutil
+                        shutil.rmtree(tmp_server_path, ignore_errors=True)
+                        return
                     jar_file = "fabric-server-launch.jar"
                 elif loader == "Forge":
                     forge_meta_url = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
@@ -809,21 +964,29 @@ class ServerManager(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Ошибка", "Выберите сервер для запуска.")
             return
         server_path = os.path.join(SERVERS_DIR, server_name)
-        bat_file = os.path.join(server_path, 'start.bat')
-        if not os.path.exists(bat_file):
-            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Файл start.bat не найден для сервера {server_name}")
+        # Найти jar-файл сервера (исключая installer)
+        jar_files = [
+            f for f in os.listdir(server_path)
+            if f.endswith(".jar") and not f.endswith("installer.jar")
+        ]
+        if not jar_files:
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не найден jar-файл сервера в папке {server_name}")
             return
+        jar_file = jar_files[0]
+        jar_path = os.path.join(server_path, jar_file)
         if self.process:
             self.process.kill()
             self.process = None
-            
+
         self.log_output.clear()
         self.process = QtCore.QProcess(self)
         self.process.setWorkingDirectory(server_path)
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.process.finished.connect(self.process_finished)
-        self.process.start('cmd.exe', ['/c', bat_file])
+        # Запуск сервера напрямую через java
+        java_path = self.config.get("java_path", "java")
+        self.process.start(java_path, ['-Xms5G', "-Xmx5G", "-jar", jar_file, "nogui"])
         self.send_command_button.setEnabled(True)
         self.set_server_status(server_name, "running")
         self.update_top_buttons()
