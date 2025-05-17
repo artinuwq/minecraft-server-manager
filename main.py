@@ -44,7 +44,6 @@ def resource_path(relative_path):
 config_path = resource_path("config.json")
 SERVERS_DIR = None
 
-
 class ServerManager(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -54,7 +53,6 @@ class ServerManager(QtWidgets.QWidget):
         # --- Защита от идиота 2 (от меня походу) ---
         self._ip_visible = False
         self._ip_always_visible = False
-
 
         # --- Иконка окна ---
         icon_path = resource_path("icon.ico")
@@ -91,7 +89,7 @@ class ServerManager(QtWidgets.QWidget):
         # --- Правая панель ---
         right_panel = QtWidgets.QVBoxLayout()
 
-        # --- Верхняя панель выбранного сервера ---
+        # --- Верхняя панель выбранного сервера + ip ---
         top_server_panel = QtWidgets.QHBoxLayout()
         self.text_label = QtWidgets.QLabel("Выбранный сервер:")
         top_server_panel.addWidget(self.text_label)
@@ -111,6 +109,11 @@ class ServerManager(QtWidgets.QWidget):
         self._ip_timer.timeout.connect(self.hide_ip)
         top_server_panel.addWidget(self.ip_label)
         right_panel.addLayout(top_server_panel)
+
+        # --- Надпись статуса сервера (перенесена под выбранный сервер) ---
+        self.status_label = QtWidgets.QLabel("Статус: Не выбран")
+        self.status_label.setStyleSheet("font-weight: bold; color: #888; padding: 4px;")
+        right_panel.addWidget(self.status_label)
 
         # --- Кнопки управления сервером ---
         controls_panel = QtWidgets.QHBoxLayout()
@@ -186,7 +189,6 @@ class ServerManager(QtWidgets.QWidget):
         self.start_button.clicked.connect(self.start_server)
         self.stop_button.clicked.connect(self.stop_server)
         self.send_command_button.clicked.connect(self.send_command)
-        
 
         # --- Загрузка конфигурации и установка папки серверов ---
         global SERVERS_DIR
@@ -984,10 +986,14 @@ class ServerManager(QtWidgets.QWidget):
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.process.finished.connect(self.process_finished)
-        # Запуск сервера напрямую через java
+
         java_path = self.config.get("java_path", "java")
-        self.process.start(java_path, ['-Xms5G', "-Xmx5G", "-jar", jar_file, "nogui"])
+        max_ram_gb = self.config.get("max_ram_gb", 5)
+        xms = f"-Xms{max_ram_gb}G"
+        xmx = f"-Xmx{max_ram_gb}G"
+        self.process.start(java_path, [xms, xmx, "-jar", jar_file, "nogui"])
         self.send_command_button.setEnabled(True)
+        self.update_status_label("starting")
         self.set_server_status(server_name, "running")
         self.update_top_buttons()
 
@@ -1003,6 +1009,7 @@ class ServerManager(QtWidgets.QWidget):
             self.send_command_button.setEnabled(False)
             if self.selected_server:
                 self.set_server_status(self.selected_server, "stopped")
+                self.update_status_label("stopped")
             self.update_top_buttons()
 
     def process_finished(self):
@@ -1011,21 +1018,58 @@ class ServerManager(QtWidgets.QWidget):
         if self.process and self.process.exitStatus() == QtCore.QProcess.ExitStatus.CrashExit:
             self.set_server_status(self.selected_server, "error")
             self.log_output.append("\nСервер завершил работу с ошибкой (краш).")
+            self.update_status_label("stopped")
             QtWidgets.QMessageBox.critical(self, "Краш сервера", "Сервер завершился с ошибкой (краш). Проверьте логи!")
         else:
             self.set_server_status(self.selected_server, "stopped")
+            self.update_status_label("stopped")
         self.update_top_buttons()
 
     def handle_stdout(self):
         if self.process:
             data = self.process.readAllStandardOutput().data().decode("utf-8", errors="ignore")
             self.log_output.append(data)
+            # Проверка на успешный запуск сервера
+            if "Done (" in data or "For help, type \"help\"" in data:
+                self.update_status_label("running")
+                self.set_server_status(self.get_selected_server(), "running")
+
+
 
     def handle_stderr(self):
         if self.process:
             data = self.process.readAllStandardError().data().decode("utf-8", errors="ignore")
             self.log_output.append(data)
+            # Проверка на ошибки запуска или краша
+            if "Exception" in data or "Error" in data or "FAILED" in data or "Caused by" in data:
+                self.update_status_label(self, "error")
+                self.set_server_status(self.get_selected_server(), "error")
 
+    def update_status_label(self, status=None, message=None):
+        if status is None:
+            status = self.get_server_status(self.get_selected_server())
+        if status == "running":
+            self.status_label.setText("Статус: Работает")
+            self.status_label.setStyleSheet("font-weight: bold; color: #4caf50; padding: 4px;")
+        elif status == "error":
+            self.status_label.setText(f"Статус: Ошибка запуска{f' ({message})' if message else ''}")
+            self.status_label.setStyleSheet("font-weight: bold; color: #f44336; padding: 4px;")
+        elif status == "stopped":
+            self.status_label.setText("Статус: Остановлен")
+            self.status_label.setStyleSheet("font-weight: bold; color: #888; padding: 4px;")
+        elif status == "starting":
+            self.status_label.setText("Статус: Запуск...")
+            self.status_label.setStyleSheet("font-weight: bold; color: #5da130; padding: 4px;")
+        elif status == "crashed":
+            self.status_label.setText("Статус: Краш")
+            self.status_label.setStyleSheet("font-weight: bold; color: #ff2400; padding: 4px;")
+        else:
+            self.status_label.setText(f"Статус: {status}")
+            self.status_label.setStyleSheet("font-weight: bold; color: #888; padding: 4px;")
+
+    # Вызовите update_status_label в нужных местах:
+    # - после выбора сервера
+    # - после запуска/остановки/краша
     def send_command(self):
         cmd = self.command_input.text().strip()
         if not cmd or not self.process or self.process.state() != QtCore.QProcess.ProcessState.Running:
