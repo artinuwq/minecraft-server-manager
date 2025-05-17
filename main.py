@@ -219,7 +219,7 @@ class ServerManager(QtWidgets.QWidget):
         self.process = None
         self.selected_server = None
         self.server_status = {}
-
+        self.online_players = set()
         # --- Инициализация интерфейса ---
         self.load_servers()
         self.update_top_buttons()
@@ -684,9 +684,9 @@ class ServerManager(QtWidgets.QWidget):
         return getattr(self, 'selected_server', None)
 
     def on_server_selected(self):
-        self.players_list.clear()
+        self.update_players_list()
         # Здесь можно добавить загрузку игроков для выбранного сервера, если нужно
-
+    
     def show_player_menu(self, pos):
         item = self.players_list.itemAt(pos)
         if not item:
@@ -752,7 +752,6 @@ class ServerManager(QtWidgets.QWidget):
             else:
                 self.command_input.setText(f"whitelist add {player_name}")
             self.send_command()
-        self.players_list.clear()
 
     def show_server_menu(self, pos, server_name, widget):
         menu = QtWidgets.QMenu(self)
@@ -1047,9 +1046,20 @@ class ServerManager(QtWidgets.QWidget):
             if "Done (" in data or "For help, type \"help\"" in data:
                 self.update_status_label("running")
                 self.set_server_status(self.get_selected_server(), "running")
+            # --- Новый код для подсчёта игроков ---
+            for line in data.splitlines():
+                join_match = re.search(r": (\w+) joined the game", line)
+                left_match = re.search(r": (\w+) left the game", line)
+                if join_match:
+                    player = join_match.group(1)
+                    self.online_players.add(player)
+                    self.update_players_list()
+                elif left_match:
+                    player = left_match.group(1)
+                    self.online_players.discard(player)
+                    self.update_players_list()
 
-
-
+    
     def handle_stderr(self):
         if self.process:
             data = self.process.readAllStandardError().data().decode("utf-8", errors="ignore")
@@ -1058,6 +1068,11 @@ class ServerManager(QtWidgets.QWidget):
             if "Exception" in data or "Error" in data or "FAILED" in data or "Caused by" in data:
                 self.update_status_label(self, "error")
                 self.set_server_status(self.get_selected_server(), "error")
+
+    def update_players_list(self):
+        self.players_list.clear()
+        for player in sorted(self.online_players):
+            self.players_list.addItem(player)
 
     def update_status_label(self, status=None, message=None):
         if status is None:
