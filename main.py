@@ -112,7 +112,7 @@ class ServerManager(QtWidgets.QWidget):
 
         # --- Надпись статуса сервера (перенесена под выбранный сервер) ---
         self.status_label = QtWidgets.QLabel("Статус: Не выбран")
-        self.status_label.setStyleSheet("font-weight: bold; color: #888; padding: 4px;")
+        self.status_label.setStyleSheet("font-weight: bold; color: #ffffff; padding: 4px;")
         right_panel.addWidget(self.status_label)
 
         # --- Кнопки управления сервером ---
