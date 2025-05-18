@@ -663,15 +663,124 @@ class ServerManager(QtWidgets.QWidget):
             self.update_ip_label()
         elif action == copy_action:
             QtWidgets.QApplication.clipboard().setText(self._real_ip)
-
+            
     def show_server_config_dialog(self):
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Настройки сервера")
-        layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(QtWidgets.QLabel("Здесь будут настройки выбранного сервера."))
-        btn = QtWidgets.QPushButton("Закрыть")
-        btn.clicked.connect(dialog.accept)
-        layout.addWidget(btn)
+        dialog.setWindowTitle("Настройки сервера") 
+        dialog.setFixedSize(300, 400)
+        layout = QtWidgets.QFormLayout(dialog)
+
+        server_name = self.get_selected_server()
+        if not server_name:
+            return
+            
+        properties_path = os.path.join(SERVERS_DIR, server_name, "server.properties")
+        properties = {}
+        
+        # Read server.properties
+        if os.path.exists(properties_path):
+            with open(properties_path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        try:
+                            key, value = line.split('=', 1)
+                            properties[key.strip()] = value.strip()
+                        except:
+                            continue
+
+        # Helper function to create clickable label with tooltip
+        def create_labeled_field(param_name, tooltip):
+            label = QtWidgets.QLabel(param_name)
+            label.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+            label.setStyleSheet("color: white;") 
+            label.setToolTip(tooltip)
+            return label
+
+        # MOTD field
+        motd_label = create_labeled_field("MOTD:", "Это описание сервера, которое видят игроки в списке серверов")
+        motd_input = QtWidgets.QLineEdit(properties.get('motd', ''))
+        layout.addRow(motd_label, motd_input)
+
+        # Server port field
+        port_label = create_labeled_field("Порт сервера:", "Порт, на котором будет работать сервер")
+        port_input = QtWidgets.QSpinBox()
+        port_input.setRange(1, 65535)
+        port_input.setValue(int(properties.get('server-port', '25565')))
+        layout.addRow(port_label, port_input)
+
+        # View distance slider
+        view_label = create_labeled_field("Дальность прорисовки:", "Дальность прорисовки в чанках (8-48)")
+        view_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        view_slider.setRange(8, 48)
+        view_slider.setValue(int(properties.get('view-distance', '10')))
+        view_value = QtWidgets.QLabel(str(view_slider.value()))
+        view_slider.valueChanged.connect(lambda v: view_value.setText(str(v)))
+        view_layout = QtWidgets.QHBoxLayout()
+        view_layout.addWidget(view_slider)
+        view_layout.addWidget(view_value)
+        layout.addRow(view_label, view_layout)
+
+        # Online mode checkbox
+        online_mode = QtWidgets.QCheckBox()
+        online_label = create_labeled_field("Онлайн режим", "Если включено - на сервер могут зайти только лицензионные аккаунты\nЕсли выключено - смогут зайти и пиратские клиенты")
+        online_mode.setChecked(properties.get('online-mode', 'true').lower() == 'true')
+        layout.addRow(online_label, online_mode)
+
+        # Hide online players checkbox
+        hide_players = QtWidgets.QCheckBox()
+        hide_label = create_labeled_field("Скрыть список игроков", "Если включено - список игроков не будет виден в меню паузы")
+        hide_players.setChecked(properties.get('hide-online-players', 'false').lower() == 'true')
+        layout.addRow(hide_label, hide_players)
+
+        # PvP checkbox 
+        pvp = QtWidgets.QCheckBox()
+        pvp_label = create_labeled_field("PVP", "Разрешает или запрещает PvP между игроками")
+        pvp.setChecked(properties.get('pvp', 'true').lower() == 'true')
+        layout.addRow(pvp_label, pvp)
+
+        # Difficulty dropdown
+        difficulty = QtWidgets.QComboBox()
+        difficulty.addItems(['peaceful', 'easy', 'normal', 'hard'])
+        difficulty.setCurrentText(properties.get('difficulty', 'easy'))
+        diff_label = create_labeled_field("Сложность:", "Уровень сложности игры:\npeaceful - монстры не появляются\neasy - легкая сложность\nnormal - средняя сложность\nhard - сложная игра")
+        layout.addRow(diff_label, difficulty)
+
+        # Gamemode dropdown 
+        gamemode = QtWidgets.QComboBox()
+        gamemode.addItems(['survival', 'creative', 'adventure', 'spectator'])
+        gamemode.setCurrentText(properties.get('gamemode', 'survival'))
+        mode_label = create_labeled_field("Режим игры:", "Режим игры по умолчанию:\nsurvival - выживание\ncreative - творческий режим\nadventure - приключение\nspectator - наблюдатель") 
+        layout.addRow(mode_label, gamemode)
+
+        # Save button
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Save | 
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+
+        def save_properties():
+            properties['motd'] = motd_input.text()
+            properties['server-port'] = str(port_input.value())
+            properties['view-distance'] = str(view_slider.value())
+            properties['online-mode'] = str(online_mode.isChecked()).lower()
+            properties['hide-online-players'] = str(hide_players.isChecked()).lower()
+            properties['pvp'] = str(pvp.isChecked()).lower()
+            properties['difficulty'] = difficulty.currentText()
+            properties['gamemode'] = gamemode.currentText()
+
+            try:
+                with open(properties_path, 'w', encoding='utf-8') as f:
+                    for key, value in properties.items():
+                        f.write(f"{key}={value}\n")
+                dialog.accept()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dialog, "Ошибка", f"Не удалось сохранить настройки:\n{str(e)}")
+
+        btn_box.accepted.connect(save_properties)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addRow(btn_box)
+
         dialog.exec()
 
     def toggle_whitelist(self):
@@ -1154,14 +1263,26 @@ class ServerManager(QtWidgets.QWidget):
                 self.set_server_status(self.get_selected_server(), "running")
             # --- Новый код для подсчёта игроков ---
             for line in data.splitlines():
+                # For Java Edition
                 join_match = re.search(r": (\w+) joined the game", line)
                 left_match = re.search(r": (\w+) left the game", line)
+                # For Bedrock Edition
+                bedrock_join = re.search(r"Player connected: (\w+)", line)
+                bedrock_left = re.search(r"Player disconnected: (\w+)", line) 
                 if join_match:
                     player = join_match.group(1)
                     self.online_players.add(player)
                     self.update_players_list()
                 elif left_match:
                     player = left_match.group(1)
+                    self.online_players.discard(player)
+                    self.update_players_list()
+                elif bedrock_join:
+                    player = bedrock_join.group(1)
+                    self.online_players.add(player)
+                    self.update_players_list()
+                elif bedrock_left:
+                    player = bedrock_left.group(1)
                     self.online_players.discard(player)
                     self.update_players_list()
 
