@@ -1175,6 +1175,9 @@ class ServerManager(QtWidgets.QWidget):
 
    
 
+
+   
+
     def toggle_server(self):
         status = self.get_server_status(self.get_selected_server())
         if status == "running":
