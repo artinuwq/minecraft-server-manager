@@ -996,6 +996,54 @@ class ServerManager(QtWidgets.QWidget):
             with open(os.path.join(folder, "start.bat"), "w", encoding="utf-8") as f:
                 f.write(f'java -Xmx5G -jar {jar_file} nogui\npause\n')
 
+        
+    def show_create_server_dialog(self):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Создать сервер")
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        # Create tab widget
+        tab_widget = QtWidgets.QTabWidget()
+        java_tab = QtWidgets.QWidget()
+        bedrock_tab = QtWidgets.QWidget()
+        
+        # Java tab layout
+        java_layout = QtWidgets.QFormLayout(java_tab)
+        java_name_edit = QtWidgets.QLineEdit()
+        java_layout.addRow("Название сервера:", java_name_edit)
+        
+        java_loader_combo = QtWidgets.QComboBox()
+        java_loader_combo.addItems(["Forge", "Fabric", "Paper"])
+        java_layout.addRow("Загрузчик:", java_loader_combo)
+        
+        java_version_combo = QtWidgets.QComboBox()
+        java_version_combo.setEditable(True)
+        java_version_combo.setPlaceholderText("например, 1.20.4")
+        java_versions = ["1.21.1", "1.20.4", "1.20.1", "1.19.4", "1.18.2", "1.17.1", "1.16.5", "1.14.4", "1.12.2", "1.10.2", "1.8.9"]
+        java_version_combo.addItems(java_versions)
+        java_layout.addRow("Версия Minecraft:", java_version_combo)
+
+        # Bedrock tab layout
+        bedrock_layout = QtWidgets.QFormLayout(bedrock_tab)
+        bedrock_name_edit = QtWidgets.QLineEdit()
+        bedrock_layout.addRow("Название сервера:", bedrock_name_edit)
+        
+        # Add tabs
+        tab_widget.addTab(java_tab, "Java Edition")
+        tab_widget.addTab(bedrock_tab, "Bedrock")
+        layout.addWidget(tab_widget)
+
+        # Buttons
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok | 
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        layout.addWidget(btn_box)
+
+        #def write_start_bat(folder, jar_file):
+        #    with open(os.path.join(folder, "start.bat"), "w", encoding="utf-8") as f:
+        #        f.write(f'java -Xmx5G -jar {jar_file} nogui\npause\n')
+
         def on_accept():
             is_java = tab_widget.currentIndex() == 0
             
@@ -1030,7 +1078,33 @@ class ServerManager(QtWidgets.QWidget):
                 os.makedirs(tmp_server_path, exist_ok=False)
                 jar_file = None
 
+                # Create status dialog
+                status_dialog = QtWidgets.QDialog(dialog)
+                status_dialog.setWindowTitle("Установка сервера")
+                status_layout = QtWidgets.QVBoxLayout(status_dialog)
+
+                status_label = QtWidgets.QLabel("Начало установки...")
+                status_label.setWordWrap(True)
+                status_layout.addWidget(status_label)
+
+                progress_bar = QtWidgets.QProgressBar()
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(0)
+                status_layout.addWidget(progress_bar)
+
+                status_dialog.setModal(True)
+                status_dialog.resize(400, 120)
+                status_dialog.show()
+
+
+                def update_status(text, progress=None):
+                    status_label.setText(text)
+                    if progress is not None:
+                        progress_bar.setValue(progress)
+                    QtWidgets.QApplication.processEvents()
+
                 if loader == "Paper":
+                    update_status("Получение информации о версиях Paper...")
                     api_url = f"https://api.papermc.io/v2/projects/paper/versions/{version}"
                     with urllib.request.urlopen(api_url) as resp:
                         data = json.load(resp)
@@ -1041,16 +1115,23 @@ class ServerManager(QtWidgets.QWidget):
                     jar_url = f"https://api.papermc.io/v2/projects/paper/versions/{version}/builds/{build}/downloads/paper-{version}-{build}.jar"
                     jar_file = "server.jar"
                     jar_path = os.path.join(tmp_server_path, jar_file)
+                    
+                    update_status("Скачивание Paper сервера...", 50)
                     urllib.request.urlretrieve(jar_url, jar_path)
+                    update_status("Скачивание Paper сервера...", 100)
 
                 elif loader == "Fabric":
+                    update_status("Получение информации о Fabric версиях...")
                     fabric_installer_url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/0.11.2/fabric-installer-0.11.2.jar"
                     installer_path = os.path.join(tmp_server_path, "fabric-installer.jar")
                     urllib.request.urlretrieve(fabric_installer_url, installer_path)
                     if not os.path.exists(installer_path):
                         raise Exception(f"Не удалось скачать fabric-installer.jar")
                     
+                    update_status("Установка зависимостей...", 30)
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+                    
+                    update_status("Установка Fabric...", 50)
                     result = subprocess.run([
                         "java", "-jar", installer_path, "server", "-mcversion", version, "-downloadMinecraft"
                     ], cwd=tmp_server_path, capture_output=True, text=True)
@@ -1058,8 +1139,10 @@ class ServerManager(QtWidgets.QWidget):
                     if result.returncode != 0:
                         raise Exception(f"Ошибка при установке Fabric:\n{result.stderr}\n{result.stdout}")
                     jar_file = "fabric-server-launch.jar"
+                    update_status("Установка Fabric...", 100)
 
                 elif loader == "Forge":
+                    update_status("Получение информации о Forge версиях...", 0)
                     forge_meta_url = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
                     installer_path = os.path.join(tmp_server_path, "forge-installer.jar")
                     req = urllib.request.Request(forge_meta_url, headers={"User-Agent": "Mozilla/5.0"})
@@ -1073,11 +1156,13 @@ class ServerManager(QtWidgets.QWidget):
                     forge_version = meta["promos"][key]
                     full_version = f"{version}-{forge_version}"
                     installer_url = f"https://maven.minecraftforge.net/net/minecraftforge/forge/{full_version}/forge-{full_version}-installer.jar"
-                    
+                    update_status("Скачивание Forge установщика...", 30)
+
                     req = urllib.request.Request(installer_url, headers={"User-Agent": "Mozilla/5.0"})
                     with urllib.request.urlopen(req) as resp, open(installer_path, "wb") as out_file:
                         out_file.write(resp.read())
 
+                    update_status("Устанвовка Forge", 60)
                     subprocess.check_call(["java", "-jar", installer_path, "--installServer"], cwd=tmp_server_path)
                     
                     jar_candidates = [f for f in os.listdir(tmp_server_path) 
@@ -1088,84 +1173,82 @@ class ServerManager(QtWidgets.QWidget):
                     else:
                         print("Ошибка: не найден forge-jar после установки")
                         raise Exception("Не найден forge-jar после установки")
+                    update_status("Ошибка...", 100)
+
+                # Check if user cancelled
+                #if progress.wasCanceled():
+                #    shutil.rmtree(tmp_server_path, ignore_errors=True)
+                #    return
 
                 elif loader == "Bedrock":
-                    print("Создание Bedrock сервера...")
-                    import zipfile
-                    
-                    # Create progress dialog
-                    progress = QtWidgets.QProgressDialog("Скачивание Bedrock Server...", "Отмена", 0, 100, dialog)
-                    progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-                    progress.setAutoClose(True)
-                    
-                    print("Скачивание Bedrock Server...")
-                    bedrock_url = get_latest_bedrock_url()
-                    zip_path = os.path.join(tmp_server_path, "bedrock-server.zip")
-                    
-                    # Create network manager for async download
-                    manager = QNetworkAccessManager()
-                    request = QNetworkRequest(QtCore.QUrl(bedrock_url))
-                    
-                    # Create file for writing
-                    output_file = QtCore.QFile(zip_path)
-                    output_file.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
-                    
-                    def handle_finished():
-                        output_file.close()
-                        extract_files()
-                        
-                    def handle_progress(bytes_received, bytes_total):
-                        if bytes_total > 0:
-                            percent = int(bytes_received * 100 / bytes_total)
-                            progress.setValue(percent)
-                            
-                    def handle_ready_read():
-                        output_file.write(reply.readAll())
-                        
-                    def extract_files():
-                        progress.setLabelText("Распаковка файлов сервера...")
-                        progress.setValue(0)
-                        QtWidgets.QApplication.processEvents()
-                        
-                        print("Распаковка файлов сервера...")
-                        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                            total_files = len(zip_ref.namelist())
-                            for index, file in enumerate(zip_ref.namelist()):
-                                if progress.wasCanceled():
-                                    raise Exception("Распаковка отменена пользователем")
-                                progress.setValue(int((index / total_files) * 100))
-                                zip_ref.extract(file, tmp_server_path)
-                                QtWidgets.QApplication.processEvents()
-                                
-                        print("Очистка временных файлов...")
-                        os.remove(zip_path)
-                        
-                        progress.setValue(100)
-                        finish_installation()
-                        
-                    def finish_installation():
-                        os.rename(tmp_server_path, server_path)
-                        dialog.accept()
-                        self.load_servers()
-                    
-                    reply = manager.get(request)
-                    reply.finished.connect(handle_finished)
-                    reply.downloadProgress.connect(handle_progress) 
-                    reply.readyRead.connect(handle_ready_read)
-                    
-                    # Keep reference to prevent garbage collection
-                    dialog.reply = reply
-                    dialog.manager = manager
-                    
-                    return # Return early, installation will finish asynchronously
+                   import zipfile
+                   update_status("Скачивание Bedrock Server...", 0)
+                
+                   bedrock_url = get_latest_bedrock_url()
+                   zip_path = os.path.join(tmp_server_path, "bedrock-server.zip")
+                
+                   manager = QNetworkAccessManager()
+                   request = QNetworkRequest(QtCore.QUrl(bedrock_url))
+                
+                   output_file = QtCore.QFile(zip_path)
+                   output_file.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+                
+                   def handle_finished():
+                       output_file.close()
+                       extract_files()
+                
+                   def handle_progress(bytes_received, bytes_total):
+                       if bytes_total > 0:
+                           percent = int(bytes_received * 100 / bytes_total)
+                           update_status(f"Скачивание Bedrock Server... ({percent}%)", percent)
+                
+                   def handle_ready_read():
+                       output_file.write(reply.readAll())
+                
+                   def extract_files():
+                       update_status("Распаковка файлов сервера...", 0)
+                       QtWidgets.QApplication.processEvents()
+                
+                       with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                           files = zip_ref.namelist()
+                           total_files = len(files)
+                           for i, file in enumerate(files):
+                               if status_dialog is None or not status_dialog.isVisible():
+                                   raise Exception("Распаковка отменена пользователем")
+                               percent = int((i / total_files) * 100)
+                               update_status(f"Распаковка: {file}", percent)
+                               zip_ref.extract(file, tmp_server_path)
+                               QtWidgets.QApplication.processEvents()
+                
+                       os.remove(zip_path)
+                       update_status("Установка завершена", 100)
+                       finish_installation()
+                
+                   def finish_installation():
+                       os.rename(tmp_server_path, server_path)
+                       status_dialog.close()
+                       dialog.accept()
+                       self.load_servers()
+                
+                   reply = manager.get(request)
+                   reply.finished.connect(handle_finished)
+                   reply.downloadProgress.connect(handle_progress)
+                   reply.readyRead.connect(handle_ready_read)
+                
+                   dialog.reply = reply
+                   dialog.manager = manager
+                
+                   return  # Установка завершится позже, асинхронно
 
                 os.rename(tmp_server_path, server_path)
                 dialog.accept()
                 self.load_servers()
+                status_dialog.close()
 
             except Exception as e:
                 import shutil
                 shutil.rmtree(tmp_server_path, ignore_errors=True)
+                status_dialog.close()
                 QtWidgets.QMessageBox.critical(dialog, "Ошибка", f"Ошибка при создании сервера: {str(e)}")
                 return
 
@@ -1173,7 +1256,6 @@ class ServerManager(QtWidgets.QWidget):
         btn_box.rejected.connect(dialog.reject)
         dialog.exec()
 
-   
 
 
    
