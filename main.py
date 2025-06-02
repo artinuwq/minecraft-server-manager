@@ -488,6 +488,7 @@ class ServerManager(QtWidgets.QWidget):
         ram_warning = QtWidgets.QLabel("")
         ram_warning.setStyleSheet("color: orange; font-size: 11px;")
         ram_warning.setWordWrap(True)
+        
         def update_ram_label(val):
             ram_label.setText(f"{val} ГБ")
             percent = val / total_gb
