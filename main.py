@@ -2,6 +2,17 @@ import os, sys, re, json, subprocess, socket, psutil
 import urllib.request
 from PyQt6 import QtWidgets, QtGui, QtCore, QtNetwork
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest
+from PyQt6.QtWidgets import QCompleter
+
+COMMANDS = [
+    "say", "stop", "whitelist on", "whitelist off", "whitelist add", "whitelist remove",
+    "ban", "ban-ip", "pardon", "kick", "op", "deop",
+    "reload", "save-all", "save-off", "save-on",
+    "difficulty", "gamemode", "time set", "time add",
+    "weather clear", "weather rain", "weather thunder",
+    "tp", "give", "effect", "title", "playsound",
+    "tick freeze", "tick unfreeze",
+]
 
 def load_config():
     if os.path.exists(config_path):
@@ -150,6 +161,7 @@ class ServerManager(QtWidgets.QWidget):
         # --- Кнопки управления сервером ---
         controls_panel = QtWidgets.QHBoxLayout()
         controls_panel.setSpacing(10)
+        
         # --- Кнопка старт/стоп ---
         self.top_startstop_button = QtWidgets.QPushButton("Старт")
         self.top_startstop_button.setFixedWidth(100)
@@ -211,7 +223,11 @@ class ServerManager(QtWidgets.QWidget):
         cmd_layout.addWidget(self.command_input)
         cmd_layout.addWidget(self.send_command_button)
         right_panel.addWidget(cmd_group)
-
+        completer = QCompleter(COMMANDS, self.command_input)
+        completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)  # чтобы не было чувствительно к регистру
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)   # выпадающий список
+        self.command_input.setCompleter(completer)
+        
         # --- Добавление панелей в основной layout ---
         main_layout.addLayout(left_panel, stretch=1)
         main_layout.addLayout(right_panel, stretch=2)
