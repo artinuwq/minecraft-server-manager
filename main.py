@@ -212,6 +212,8 @@ class ServerManager(QtWidgets.QWidget):
         console_layout.addWidget(self.log_output)
         right_panel.addWidget(console_group, stretch=1)
 
+
+
         # --- Ввод команды и кнопка отправки ---
         cmd_group = QtWidgets.QGroupBox()
         cmd_group.setFlat(True)
